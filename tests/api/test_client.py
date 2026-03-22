@@ -190,3 +190,16 @@ def test_time_entry_to_db_dict():
     assert d["userId"] == "u-1"
     assert d["timeInterval"]["duration"] == "PT1H30M"
     assert d["billable"] is True
+
+
+def test_time_entry_null_tag_ids_coerced_to_empty_list():
+    """Regression: Clockify API returns tagIds: null on some entries."""
+    payload = {**ENTRY_PAYLOAD, "tagIds": None}
+    entry = TimeEntry.model_validate(payload)
+    assert entry.tag_ids == []
+
+
+def test_time_entry_missing_tag_ids_defaults_to_empty_list():
+    payload = {k: v for k, v in ENTRY_PAYLOAD.items() if k != "tagIds"}
+    entry = TimeEntry.model_validate(payload)
+    assert entry.tag_ids == []

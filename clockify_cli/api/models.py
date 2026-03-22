@@ -1,6 +1,6 @@
 """Pydantic models for Clockify API responses."""
-from typing import Optional
-from pydantic import BaseModel, Field
+from typing import Any, Optional
+from pydantic import BaseModel, Field, field_validator
 
 
 class TimeInterval(BaseModel):
@@ -124,6 +124,14 @@ class TimeEntry(BaseModel):
     tag_ids: list[str] = Field(default_factory=list, alias="tagIds")
 
     model_config = {"populate_by_name": True}
+
+    @field_validator("tag_ids", mode="before")
+    @classmethod
+    def coerce_null_tag_ids(cls, v: Any) -> list[str]:
+        """Clockify sometimes returns null instead of [] for tagIds."""
+        if v is None:
+            return []
+        return v  # type: ignore[return-value]
 
     def to_db_dict(self) -> dict:
         return {
