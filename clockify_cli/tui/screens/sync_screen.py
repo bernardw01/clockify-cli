@@ -18,11 +18,11 @@ _ENTITY_LABELS: dict[str, str] = {
     "time_entries": "Time Entries",
 }
 
-_STATUS_MARKUP: dict[str, str] = {
-    "pending": "[dim]waiting[/dim]",
-    "running": "[yellow]syncing[/yellow]",
-    "done": "[green]done[/green]",
-    "error": "[red]error[/red]",
+_STATUS_TEXT: dict[str, str] = {
+    "pending": "waiting",
+    "running": "syncing",
+    "done": "done",
+    "error": "error",
 }
 
 
@@ -35,7 +35,6 @@ class SyncScreen(Screen):
         Binding("i", "toggle_incremental", "Toggle Full/Incremental"),
     ]
 
-    progress: reactive[Optional[SyncProgress]] = reactive(None)
     incremental: reactive[bool] = reactive(True)
 
     def compose(self) -> ComposeResult:
@@ -62,9 +61,9 @@ class SyncScreen(Screen):
                         )
                         yield Label("—", id=f"count-{entity}", classes="entity-count")
                         yield Label(
-                            "[dim]waiting[/dim]",
+                            "waiting",
                             id=f"status-{entity}",
-                            classes="entity-status",
+                            classes="entity-status status-pending",
                         )
 
             yield Log(id="sync-log", highlight=True)
@@ -83,7 +82,7 @@ class SyncScreen(Screen):
     def action_start_sync(self) -> None:
         config = self.app.config  # type: ignore[attr-defined]
         if not config.is_configured():
-            self._log("[red]Not configured. Go to Settings first.[/red]")
+            self._log("Not configured — go to Settings first.")
             return
         self.run_worker(self._run_sync(), exclusive=True, name="sync-worker")
 
@@ -94,7 +93,7 @@ class SyncScreen(Screen):
     def _update_mode_label(self) -> None:
         mode = "Incremental" if self.incremental else "Full"
         self.query_one("#sync-mode-label", Label).update(
-            f"Mode: [bold]{mode}[/bold]  (press [i] to toggle)"
+            f"Mode: {mode}  (press i to toggle)"
         )
 
     async def _run_sync(self) -> None:
@@ -104,7 +103,8 @@ class SyncScreen(Screen):
         config = self.app.config  # type: ignore[attr-defined]
         db = self.app.db  # type: ignore[attr-defined]
 
-        self._log(f"[bold]Starting {'incremental' if self.incremental else 'full'} sync…[/bold]")
+        mode = "incremental" if self.incremental else "full"
+        self._log(f"Starting {mode} sync...")
         self.query_one("#btn-start", Button).disabled = True
 
         try:
@@ -115,52 +115,59 @@ class SyncScreen(Screen):
                     incremental=self.incremental,
                     on_progress=self._on_progress,
                 )
-            # Update last_sync timestamp
             from clockify_cli.config import save_config
             config.last_sync = datetime.now(timezone.utc).isoformat()
             save_config(config)
-            self._log("[green]Sync complete![/green]")
+            self._log("Sync complete!")
         except Exception as exc:
-            self._log(f"[red]Sync error: {exc}[/red]")
+            self._log(f"Sync error: {exc}")
         finally:
             self.query_one("#btn-start", Button).disabled = False
 
     async def _on_progress(self, progress: SyncProgress) -> None:
-        self.progress = progress
+        """Called by orchestrator after every page — update widgets directly.
 
-    def watch_progress(self, progress: Optional[SyncProgress]) -> None:
-        """Called by Textual when self.progress changes — update all widgets."""
-        if progress is None:
-            return
+        We do NOT use a reactive here because the same SyncProgress object is
+        mutated in-place; Textual's reactive system would skip the watcher on
+        subsequent calls with the same object reference.
+        """
         for entity, ep in progress.entities.items():
             try:
                 pb = self.query_one(f"#pb-{entity}", ProgressBar)
                 count_label = self.query_one(f"#count-{entity}", Label)
                 status_label = self.query_one(f"#status-{entity}", Label)
 
-                # Progress bar
+                # Progress bar (total=100, progress=percent)
                 if ep.percent > 0:
                     pb.update(progress=ep.percent)
+                elif ep.status == "running":
+                    pb.update(progress=1)  # show at least a sliver of activity
 
-                # Count
+                # Record counts
                 if ep.records_fetched > 0:
                     count_label.update(
                         f"{ep.records_upserted:,} / {ep.records_fetched:,}"
                     )
 
-                # Status chip
-                status_label.update(_STATUS_MARKUP.get(ep.status, ep.status))
+                # Status text
+                new_status = _STATUS_TEXT.get(ep.status, ep.status)
+                status_label.update(new_status)
+                # Swap CSS class so colour changes
+                for cls in ("status-pending", "status-running", "status-done", "status-error"):
+                    status_label.remove_class(cls)
+                status_label.add_class(f"status-{ep.status}")
 
-                # Log errors
+                # Surface errors to the log
                 if ep.status == "error" and ep.error:
-                    self._log(f"[red]{entity}: {ep.error}[/red]")
-            except Exception:
-                pass  # Widget might not exist yet during compose
+                    self._log(f"ERROR {entity}: {ep.error}")
+
+            except Exception as exc:
+                self._log(f"UI update error ({entity}): {exc}")
 
     def _log(self, message: str) -> None:
         try:
             log = self.query_one("#sync-log", Log)
             ts = datetime.now().strftime("%H:%M:%S")
-            log.write_line(f"[dim]{ts}[/dim]  {message}")
+            log.write_line(f"{ts}  {message}")
         except Exception:
             pass
