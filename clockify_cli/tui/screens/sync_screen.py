@@ -67,7 +67,7 @@ class SyncScreen(Screen):
                             classes="entity-status",
                         )
 
-            yield Log(id="sync-log", highlight=True, markup=True)
+            yield Log(id="sync-log", highlight=True)
         yield Footer()
 
     def on_mount(self) -> None:
