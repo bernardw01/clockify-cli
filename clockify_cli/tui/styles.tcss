@@ -1,0 +1,223 @@
+/* Global styles */
+Screen {
+    background: $surface;
+}
+
+/* ── Header / Footer ─────────────────────────────────────────────────────── */
+Header {
+    background: $primary;
+    color: $text;
+    height: 3;
+}
+
+Footer {
+    background: $primary-darken-2;
+}
+
+/* ── Main Menu ───────────────────────────────────────────────────────────── */
+#main-menu-screen {
+    align: center middle;
+}
+
+#menu-panel {
+    width: 52;
+    height: auto;
+    border: round $primary;
+    padding: 1 2;
+    background: $surface-lighten-1;
+}
+
+#menu-title {
+    text-align: center;
+    text-style: bold;
+    color: $primary;
+    margin-bottom: 1;
+}
+
+#workspace-label {
+    text-align: center;
+    color: $text-muted;
+    margin-bottom: 1;
+}
+
+#sync-status {
+    text-align: center;
+    color: $text-muted;
+    margin-bottom: 1;
+}
+
+.menu-item {
+    width: 100%;
+    height: 3;
+    margin: 0 1;
+    border: none;
+    background: $surface;
+    color: $text;
+}
+
+.menu-item:hover {
+    background: $primary;
+    color: $text;
+}
+
+.menu-item:focus {
+    background: $primary;
+    color: $text;
+    border: none;
+}
+
+.menu-separator {
+    height: 1;
+    margin: 0 1;
+    color: $primary-darken-2;
+}
+
+/* ── Settings Screen ─────────────────────────────────────────────────────── */
+#settings-screen {
+    align: center middle;
+}
+
+#settings-panel {
+    width: 60;
+    height: auto;
+    border: round $primary;
+    padding: 1 2;
+    background: $surface-lighten-1;
+}
+
+#settings-title {
+    text-align: center;
+    text-style: bold;
+    color: $primary;
+    margin-bottom: 1;
+}
+
+.settings-label {
+    margin-top: 1;
+    color: $text-muted;
+}
+
+.settings-input {
+    margin-bottom: 1;
+}
+
+.settings-select {
+    margin-bottom: 1;
+}
+
+#settings-save {
+    margin-top: 1;
+    width: 100%;
+}
+
+#settings-status {
+    text-align: center;
+    margin-top: 1;
+}
+
+/* ── Sync Screen ─────────────────────────────────────────────────────────── */
+#sync-screen {
+    layout: vertical;
+}
+
+#sync-header {
+    height: 5;
+    padding: 1 2;
+    background: $surface-lighten-1;
+    border-bottom: solid $primary-darken-2;
+}
+
+#sync-header-title {
+    text-style: bold;
+    color: $primary;
+}
+
+#sync-controls {
+    layout: horizontal;
+    height: 3;
+    padding: 0 2;
+    background: $surface;
+    align: left middle;
+}
+
+#sync-entity-list {
+    height: auto;
+    padding: 1 2;
+}
+
+.sync-entity-row {
+    layout: horizontal;
+    height: 5;
+    margin-bottom: 1;
+    padding: 0 1;
+    background: $surface-lighten-1;
+    border: round $surface-lighten-3;
+}
+
+.entity-label {
+    width: 14;
+    content-align: left middle;
+    color: $text;
+    text-style: bold;
+}
+
+.entity-progress {
+    width: 1fr;
+    content-align: left middle;
+}
+
+.entity-count {
+    width: 18;
+    content-align: right middle;
+    color: $text-muted;
+}
+
+.entity-status {
+    width: 8;
+    content-align: center middle;
+}
+
+.status-pending { color: $text-muted; }
+.status-running { color: $warning; }
+.status-done    { color: $success; }
+.status-error   { color: $error; }
+
+#sync-log {
+    border-top: solid $primary-darken-2;
+    height: 1fr;
+    padding: 0 1;
+}
+
+/* ── Time Entries Screen ─────────────────────────────────────────────────── */
+#entries-screen {
+    layout: vertical;
+}
+
+#entries-toolbar {
+    layout: horizontal;
+    height: 3;
+    padding: 0 1;
+    background: $surface-lighten-1;
+    border-bottom: solid $primary-darken-2;
+    align: left middle;
+}
+
+#search-input {
+    width: 30;
+    margin-right: 1;
+}
+
+#project-filter {
+    width: 24;
+    margin-right: 1;
+}
+
+#entry-count {
+    width: 1fr;
+    content-align: right middle;
+    color: $text-muted;
+}
+
+#entries-table {
+    height: 1fr;
+}
