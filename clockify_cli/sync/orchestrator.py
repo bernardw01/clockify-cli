@@ -59,6 +59,9 @@ class SyncOrchestrator:
             f"for workspace {workspace_id}"
         )
 
+        # 0. Ensure the workspace row exists before any FK-dependent inserts
+        await self._ensure_workspace(workspace_id)
+
         # 1. Clients
         await self._sync_entity(
             progress, "clients", _notify,
@@ -92,6 +95,25 @@ class SyncOrchestrator:
         return progress
 
     # ── entity sync helpers ───────────────────────────────────────────────────
+
+    async def _ensure_workspace(self, workspace_id: str) -> None:
+        """Fetch the workspace from the API and upsert it so FK constraints pass."""
+        existing = await self._workspaces.get_by_id(workspace_id)
+        if existing:
+            logger.debug(f"Workspace {workspace_id} already in DB, skipping fetch")
+            return
+        logger.info(f"Upserting workspace {workspace_id} into DB")
+        workspaces = await self._client.get_workspaces()
+        matching = [w for w in workspaces if w.id == workspace_id]
+        if matching:
+            await self._workspaces.upsert_many([w.to_db_dict() for w in matching])
+        else:
+            # Fallback: insert a minimal placeholder so FKs don't fail
+            await self._db.execute(
+                "INSERT OR IGNORE INTO workspaces(id, name) VALUES (?, ?)",
+                (workspace_id, workspace_id),
+            )
+            logger.warning(f"Workspace {workspace_id} not found in API — inserted placeholder")
 
     async def _sync_entity(
         self,

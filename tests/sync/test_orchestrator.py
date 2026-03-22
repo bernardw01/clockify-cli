@@ -7,7 +7,7 @@ import pytest
 
 from clockify_cli.api.client import ClockifyClient
 from clockify_cli.api.exceptions import AuthError
-from clockify_cli.api.models import Client, Project, TimeEntry, WorkspaceUser
+from clockify_cli.api.models import Client, Project, TimeEntry, Workspace, WorkspaceUser
 from clockify_cli.db.database import Database
 from clockify_cli.sync.orchestrator import SyncOrchestrator
 from clockify_cli.sync.progress import SyncProgress
@@ -33,10 +33,13 @@ def make_mock_client(
     projects: list | None = None,
     users: list | None = None,
     time_entry_pages: list | None = None,
+    workspaces: list | None = None,
 ) -> ClockifyClient:
     """Build a ClockifyClient with async-mocked methods."""
     mock = MagicMock(spec=ClockifyClient)
 
+    default_ws = [Workspace.model_validate({"id": WS_ID, "name": "Test Workspace"})]
+    mock.get_workspaces = AsyncMock(return_value=workspaces if workspaces is not None else default_ws)
     mock.get_clients = AsyncMock(return_value=clients or [])
     mock.get_projects = AsyncMock(return_value=projects or [])
     mock.get_users = AsyncMock(return_value=users or [])
@@ -184,6 +187,20 @@ async def test_client_api_error_marks_entity_error(db: Database):
     assert "Bad key" in (progress.entities["clients"].error or "")
     # Other entities should still run
     assert progress.entities["projects"].status == "done"
+
+
+async def test_sync_succeeds_without_pre_seeded_workspace(tmp_path: Path):
+    """Regression: FK constraint on clients.workspace_id must not fail when
+    the workspace row doesn't exist in the DB before sync starts."""
+    database = Database(tmp_path / "fresh.db")
+    async with database:
+        # No workspace row pre-inserted — this is the scenario that was failing
+        client = make_mock_client(clients=[make_client("c-1")])
+        orch = SyncOrchestrator(client, database)
+        progress = await orch.sync_all(WS_ID, incremental=False)
+
+    assert progress.entities["clients"].status == "done"
+    assert progress.entities["clients"].records_upserted == 1
 
 
 async def test_sync_progress_dataclass():
