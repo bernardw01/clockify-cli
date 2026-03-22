@@ -194,6 +194,9 @@ class SyncOrchestrator:
         total_fetched = 0
         total_upserted = 0
         last_entry_time: Optional[str] = None
+        # Cumulative page counters across all users so progress % reaches 100
+        pages_done = 0
+        pages_estimate = 0  # grows as each user's first page reveals their total
 
         for user in users:
             user_id = user["id"]
@@ -203,9 +206,15 @@ class SyncOrchestrator:
                 if start:
                     logger.debug(f"Incremental sync for user {user_id} from {start}")
 
+            user_total_known = False
             async for page_entries, page_num, total_pages in self._client.iter_time_entries(
                 workspace_id, user_id, start=start
             ):
+                if not user_total_known:
+                    pages_estimate += total_pages
+                    user_total_known = True
+                pages_done += 1
+
                 # Inject user_id (some endpoints omit it in response body)
                 dicts = []
                 for e in page_entries:
@@ -224,15 +233,18 @@ class SyncOrchestrator:
                     if last_entry_time is None or page_latest > last_entry_time:
                         last_entry_time = page_latest
 
-                # Update progress for TUI
+                # Update progress for TUI — cumulative pages so % reaches 100
                 ep.records_fetched = total_fetched
                 ep.records_upserted = total_upserted
-                ep.current_page = page_num
-                ep.total_pages = max(ep.total_pages, total_pages * len(users))
+                ep.current_page = pages_done
+                ep.total_pages = max(pages_estimate, 1)
                 await notify()
 
                 # Brief yield to keep the event loop responsive
                 await asyncio.sleep(0)
+
+        # Ensure progress bar hits 100% on completion
+        ep.current_page = ep.total_pages = max(pages_done, 1)
 
         await self._sync_log.complete_sync(
             workspace_id, "time_entries",

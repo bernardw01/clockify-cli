@@ -46,6 +46,7 @@ class SyncScreen(Screen):
 
             with Static(id="sync-controls"):
                 yield Button("Start Sync [s]", id="btn-start", variant="primary")
+                yield Button("Mode: Incremental [i]", id="btn-toggle", variant="default")
                 yield Button("Back [Esc]", id="btn-back", variant="default")
 
             with Static(id="sync-entity-list"):
@@ -76,6 +77,8 @@ class SyncScreen(Screen):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-start":
             self.action_start_sync()
+        elif event.button.id == "btn-toggle":
+            self.action_toggle_incremental()
         elif event.button.id == "btn-back":
             self.action_dismiss()
 
@@ -92,9 +95,8 @@ class SyncScreen(Screen):
 
     def _update_mode_label(self) -> None:
         mode = "Incremental" if self.incremental else "Full"
-        self.query_one("#sync-mode-label", Label).update(
-            f"Mode: {mode}  (press i to toggle)"
-        )
+        self.query_one("#sync-mode-label", Label).update(f"Mode: {mode}")
+        self.query_one("#btn-toggle", Button).label = f"Mode: {mode} [i]"
 
     async def _run_sync(self) -> None:
         from clockify_cli.api.client import ClockifyClient
