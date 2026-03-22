@@ -30,7 +30,7 @@ class SyncScreen(Screen):
     """Displays real-time sync progress for each entity type."""
 
     BINDINGS = [
-        Binding("escape", "pop_screen", "Back"),
+        Binding("escape", "dismiss", "Back"),
         Binding("s", "start_sync", "Start Sync"),
         Binding("i", "toggle_incremental", "Toggle Full/Incremental"),
     ]
@@ -78,7 +78,7 @@ class SyncScreen(Screen):
         if event.button.id == "btn-start":
             self.action_start_sync()
         elif event.button.id == "btn-back":
-            self.action_pop_screen()
+            self.action_dismiss()
 
     def action_start_sync(self) -> None:
         config = self.app.config  # type: ignore[attr-defined]

@@ -11,7 +11,7 @@ class SettingsScreen(Screen):
     """Configure API key and active workspace."""
 
     BINDINGS = [
-        Binding("escape", "pop_screen", "Back"),
+        Binding("escape", "dismiss", "Back"),
         Binding("ctrl+s", "save", "Save"),
     ]
 

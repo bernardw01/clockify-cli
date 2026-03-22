@@ -27,7 +27,7 @@ class TimeEntriesScreen(Screen):
     """Browse locally-stored time entries with search and project filter."""
 
     BINDINGS = [
-        Binding("escape", "pop_screen", "Back"),
+        Binding("escape", "dismiss", "Back"),
         Binding("/", "focus_search", "Search"),
         Binding("r", "refresh", "Refresh"),
     ]
