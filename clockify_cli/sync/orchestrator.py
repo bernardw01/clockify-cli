@@ -128,7 +128,7 @@ class SyncOrchestrator:
         try:
             await coro  # type: ignore[misc]
             ep.status = "done"
-        except ClockifyAPIError as exc:
+        except Exception as exc:
             ep.status = "error"
             ep.error = str(exc)
             await self._sync_log.fail_sync(progress.workspace_id, entity_type, str(exc))

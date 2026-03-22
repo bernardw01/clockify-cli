@@ -203,6 +203,38 @@ async def test_sync_succeeds_without_pre_seeded_workspace(tmp_path: Path):
     assert progress.entities["clients"].records_upserted == 1
 
 
+async def test_time_entry_with_archived_project_syncs_successfully(db: Database):
+    """Regression: time entries referencing archived projects caused FK constraint errors
+    because we previously skipped archived projects during sync."""
+    archived_project = Project.model_validate({
+        "id": "p-archived", "name": "Old Project", "workspaceId": WS_ID,
+        "clientId": None, "archived": True, "billable": False, "public": False,
+    })
+    user = make_user("u-1")
+    entry = TimeEntry.model_validate({
+        "id": "te-archived", "workspaceId": WS_ID, "userId": "u-1",
+        "projectId": "p-archived",  # references an archived project
+        "taskId": None, "description": "Old work",
+        "billable": False, "isLocked": False, "tagIds": [],
+        "timeInterval": {"start": "2023-01-01T09:00:00Z", "end": "2023-01-01T10:00:00Z"},
+    })
+    await db.execute(
+        "INSERT OR IGNORE INTO users(id, workspace_id, name) VALUES (?, ?, ?)",
+        ("u-1", WS_ID, "Alice"),
+    )
+    client = make_mock_client(
+        projects=[archived_project],
+        users=[user],
+        time_entry_pages=[[entry]],
+    )
+    orch = SyncOrchestrator(client, db)
+    progress = await orch.sync_all(WS_ID, incremental=False)
+
+    assert progress.entities["projects"].records_upserted == 1
+    assert progress.entities["time_entries"].records_upserted == 1
+    assert not progress.has_errors
+
+
 async def test_sync_progress_dataclass():
     p = SyncProgress(workspace_id="ws-1", incremental=True)
     assert not p.is_done  # all entities start as "pending"

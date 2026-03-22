@@ -157,20 +157,16 @@ class ClockifyClient:
 
     async def get_clients(self, workspace_id: str) -> list[Client]:
         logger.info(f"Fetching clients for workspace {workspace_id}")
-        data = await self._get_paginated(
-            f"/workspaces/{workspace_id}/clients",
-            {"archived": "false"},
-        )
+        # Fetch all clients including archived — time entries may reference archived clients
+        data = await self._get_paginated(f"/workspaces/{workspace_id}/clients")
         clients = [Client.model_validate(c) for c in data]
         logger.info(f"Fetched {len(clients)} client(s)")
         return clients
 
     async def get_projects(self, workspace_id: str) -> list[Project]:
         logger.info(f"Fetching projects for workspace {workspace_id}")
-        data = await self._get_paginated(
-            f"/workspaces/{workspace_id}/projects",
-            {"archived": "false"},
-        )
+        # Fetch all projects including archived — time entries may reference archived projects
+        data = await self._get_paginated(f"/workspaces/{workspace_id}/projects")
         projects = [Project.model_validate(p) for p in data]
         logger.info(f"Fetched {len(projects)} project(s)")
         return projects
