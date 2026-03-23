@@ -199,10 +199,14 @@ def test_to_fibery_entity_already_has_millis_unchanged():
     assert entity["Agreement Management/Start Date Time"] == "2025-12-02T17:00:00.500Z"
 
 
-def test_to_fibery_entity_omits_none_fields():
+def test_to_fibery_entity_includes_none_fields_as_null():
+    """All fields must be present in every entity (Fibery batch shape requirement)."""
     entity = _make_payload(task=None, task_id=None).to_fibery_entity()
-    assert "Agreement Management/Task" not in entity
-    assert "Agreement Management/Task ID" not in entity
+    # Fields must be present (even if null) so all entities share the same shape
+    assert "Agreement Management/Task" in entity
+    assert entity["Agreement Management/Task"] is None
+    assert "Agreement Management/Task ID" in entity
+    assert entity["Agreement Management/Task ID"] is None
 
 
 def test_to_fibery_entity_includes_clockify_user_relation():
@@ -215,9 +219,12 @@ def test_to_fibery_entity_includes_agreement_relation():
     assert entity["Agreement Management/Agreement"] == {"fibery/id": "fibery-ag-uuid"}
 
 
-def test_to_fibery_entity_omits_relations_when_none():
+def test_to_fibery_entity_sets_relations_to_none_when_unmatched():
+    """Unmatched relations must be present as null (not omitted) for batch shape uniformity."""
     entity = _make_payload(
         clockify_user_fibery_id=None, agreement_fibery_id=None
     ).to_fibery_entity()
-    assert "Agreement Management/Clockify User" not in entity
-    assert "Agreement Management/Agreement" not in entity
+    assert "Agreement Management/Clockify User" in entity
+    assert entity["Agreement Management/Clockify User"] is None
+    assert "Agreement Management/Agreement" in entity
+    assert entity["Agreement Management/Agreement"] is None

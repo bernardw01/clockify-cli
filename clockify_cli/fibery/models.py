@@ -34,41 +34,37 @@ class LaborCostPayload:
     agreement_fibery_id: Optional[str]        # resolved relation; None if unmatched
 
     def to_fibery_entity(self) -> dict:
-        """Build the entity dict for fibery.entity.batch/create-or-update."""
-        entity: dict = {
+        """Build the entity dict for fibery.entity.batch/create-or-update.
+
+        Fibery requires every entity in a batch to carry the *same set of
+        fields*.  Optional fields are therefore always present — set to None
+        (JSON null) when absent rather than omitted.  Relation fields use
+        {"fibery/id": uuid} when matched, or None when unmatched.
+        """
+        return {
             "Agreement Management/Time Log ID": self.time_log_id,
             "Agreement Management/Start Date Time": _normalize_dt(self.start_dt),
+            "Agreement Management/End Date Time": _normalize_dt(self.end_dt),
+            "Agreement Management/Seconds": self.seconds,
+            "Agreement Management/Clockify Hours": (
+                round(self.hours, 4) if self.hours is not None else None
+            ),
+            "Agreement Management/Task": self.task,
+            "Agreement Management/Task ID": self.task_id,
+            "Agreement Management/Project ID": self.project_id,
             "Agreement Management/Billable": self.billable,
+            "Agreement Management/User ID": self.user_id_text,
+            "Agreement Management/Time Entry User Name": self.user_name,
+            "Agreement Management/Time Entry Project Name": self.project_name,
+            "Agreement Management/Clockify User": (
+                {"fibery/id": self.clockify_user_fibery_id}
+                if self.clockify_user_fibery_id else None
+            ),
+            "Agreement Management/Agreement": (
+                {"fibery/id": self.agreement_fibery_id}
+                if self.agreement_fibery_id else None
+            ),
         }
-
-        if self.end_dt:
-            entity["Agreement Management/End Date Time"] = _normalize_dt(self.end_dt)
-        if self.seconds is not None:
-            entity["Agreement Management/Seconds"] = self.seconds
-        if self.hours is not None:
-            entity["Agreement Management/Clockify Hours"] = round(self.hours, 4)
-        if self.task:
-            entity["Agreement Management/Task"] = self.task
-        if self.task_id:
-            entity["Agreement Management/Task ID"] = self.task_id
-        if self.project_id:
-            entity["Agreement Management/Project ID"] = self.project_id
-        if self.user_id_text:
-            entity["Agreement Management/User ID"] = self.user_id_text
-        if self.user_name:
-            entity["Agreement Management/Time Entry User Name"] = self.user_name
-        if self.project_name:
-            entity["Agreement Management/Time Entry Project Name"] = self.project_name
-        if self.clockify_user_fibery_id:
-            entity["Agreement Management/Clockify User"] = {
-                "fibery/id": self.clockify_user_fibery_id
-            }
-        if self.agreement_fibery_id:
-            entity["Agreement Management/Agreement"] = {
-                "fibery/id": self.agreement_fibery_id
-            }
-
-        return entity
 
 
 @dataclass

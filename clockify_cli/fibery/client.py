@@ -108,10 +108,15 @@ class FiberyClient:
 
         for i, r in enumerate(results):
             if isinstance(r, dict) and not r.get("success", True):
-                logger.warning(
-                    f"Fibery command[{i}] reported failure: "
-                    f"{r.get('error', 'unknown error')}"
+                # Fibery puts error detail in result.message, not a top-level 'error' key
+                result_body = r.get("result") or {}
+                err_detail = (
+                    result_body.get("message")
+                    or result_body.get("name")
+                    or r.get("error")
+                    or "unknown error"
                 )
+                logger.warning(f"Fibery command[{i}] reported failure: {err_detail}")
 
         return results
 
@@ -211,9 +216,14 @@ class FiberyClient:
 
         result = results[0] if results else {}
         if not result.get("success", False):
-            raise ClockifyAPIError(
-                f"Fibery batch upsert failed: {result.get('error', 'unknown')}"
+            result_body = result.get("result") or {}
+            err_detail = (
+                result_body.get("message")
+                or result_body.get("name")
+                or result.get("error")
+                or "unknown"
             )
+            raise ClockifyAPIError(f"Fibery batch upsert failed: {err_detail}")
 
         # The result count may vary by Fibery version; fall back to input count
         count: int = len(result.get("result", entities))
