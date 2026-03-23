@@ -13,6 +13,7 @@ class MainMenuScreen(Screen):
     BINDINGS = [
         Binding("s", "sync", "Sync"),
         Binding("e", "entries", "Entries"),
+        Binding("f", "fibery", "Push to Fibery"),
         Binding("comma", "settings", "Settings"),
         Binding("q", "app.quit", "Quit"),
     ]
@@ -26,6 +27,7 @@ class MainMenuScreen(Screen):
             yield Label("", id="sync-status")
             yield Button("  Sync Data", id="btn-sync", classes="menu-item")
             yield Button("  Browse Entries", id="btn-entries", classes="menu-item")
+            yield Button("  Push to Fibery", id="btn-fibery", classes="menu-item")
             yield Button("  Settings", id="btn-settings", classes="menu-item")
             yield Button("  Quit", id="btn-quit", classes="menu-item")
         yield Footer()
@@ -59,6 +61,8 @@ class MainMenuScreen(Screen):
             self.action_sync()
         elif btn_id == "btn-entries":
             self.action_entries()
+        elif btn_id == "btn-fibery":
+            self.action_fibery()
         elif btn_id == "btn-settings":
             self.action_settings()
         elif btn_id == "btn-quit":
@@ -71,6 +75,10 @@ class MainMenuScreen(Screen):
     def action_entries(self) -> None:
         from clockify_cli.tui.screens.time_entries import TimeEntriesScreen
         self.app.push_screen(TimeEntriesScreen())
+
+    def action_fibery(self) -> None:
+        from clockify_cli.tui.screens.fibery_push_screen import FiberyPushScreen
+        self.app.push_screen(FiberyPushScreen())
 
     def action_settings(self) -> None:
         from clockify_cli.tui.screens.settings import SettingsScreen

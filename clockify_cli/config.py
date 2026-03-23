@@ -12,14 +12,24 @@ class Config:
     workspace_id: str = ""
     workspace_name: str = ""
     last_sync: Optional[str] = None  # ISO datetime of last full sync
+    fibery_api_key: str = ""
+    fibery_workspace: str = "harpin-ai"
 
     def get_api_key(self) -> str:
         """Return env var override if set, else stored key."""
         return os.environ.get("CLOCKIFY_API_KEY", self.api_key)
 
+    def get_fibery_api_key(self) -> str:
+        """Return Fibery env var override if set, else stored key."""
+        return os.environ.get("FIBERY_API_KEY", self.fibery_api_key)
+
     def is_configured(self) -> bool:
-        """True if an API key is available and a workspace is selected."""
+        """True if a Clockify API key is available and a workspace is selected."""
         return bool(self.get_api_key()) and bool(self.workspace_id)
+
+    def is_fibery_configured(self) -> bool:
+        """True if a Fibery API key is set."""
+        return bool(self.get_fibery_api_key())
 
 
 def load_config() -> Config:

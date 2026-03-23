@@ -13,6 +13,15 @@ DB_PATH = DATA_DIR / "clockify.db"
 LOG_DIR = DATA_DIR / "logs"
 LOG_FILE = LOG_DIR / "clockify-cli.log"
 
+# Fibery API
+FIBERY_BASE_URL = "https://{workspace}.fibery.io"
+FIBERY_COMMANDS_PATH = "/api/commands"
+FIBERY_LABOR_COSTS_TYPE = "Agreement Management/Labor Costs"
+FIBERY_CLOCKIFY_USERS_TYPE = "Agreement Management/Clockify Users"
+FIBERY_AGREEMENTS_TYPE = "Agreement Management/Agreements"
+FIBERY_MAX_CONCURRENT = 3   # Fibery rate limit: 3 req/sec
+FIBERY_BATCH_SIZE = 50      # entities per batch/create-or-update call
+
 # App metadata
 APP_NAME = "Clockify CLI"
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.2.0"

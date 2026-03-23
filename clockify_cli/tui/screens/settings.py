@@ -44,6 +44,17 @@ class SettingsScreen(Screen):
                 )
 
                 yield Button("Fetch Workspaces", id="btn-fetch", variant="default")
+
+                yield Label("── Fibery ──────────────────────────────────", classes="settings-label")
+                yield Label("Fibery API Key", classes="settings-label")
+                yield Input(
+                    placeholder="Paste your Fibery token here",
+                    password=True,
+                    id="fibery-key-input",
+                    classes="settings-input",
+                )
+                yield Button("Verify Fibery Connection", id="btn-fibery-verify", variant="default")
+
                 yield Button("Save", id="btn-save", variant="primary")
                 yield Label("", id="settings-status")
         yield Footer()
@@ -53,10 +64,14 @@ class SettingsScreen(Screen):
         config = self.app.config  # type: ignore[attr-defined]
         if config.api_key:
             self.query_one("#api-key-input", Input).value = config.api_key
+        if config.fibery_api_key:
+            self.query_one("#fibery-key-input", Input).value = config.fibery_api_key
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-fetch":
             self.run_worker(self._fetch_workspaces(), exclusive=True)
+        elif event.button.id == "btn-fibery-verify":
+            self.run_worker(self._verify_fibery(), exclusive=True)
         elif event.button.id == "btn-save":
             self.action_save()
 
@@ -89,19 +104,43 @@ class SettingsScreen(Screen):
         except ClockifyAPIError as exc:
             status.update(f"[red]Error: {exc}[/red]")
 
+    async def _verify_fibery(self) -> None:
+        from clockify_cli.fibery.client import FiberyClient
+
+        status = self.query_one("#settings-status", Label)
+        config = self.app.config  # type: ignore[attr-defined]
+        fibery_key = self.query_one("#fibery-key-input", Input).value.strip()
+        if not fibery_key:
+            status.update("[red]Enter a Fibery API key first.[/red]")
+            return
+
+        status.update("[yellow]Verifying Fibery connection...[/yellow]")
+        try:
+            async with FiberyClient(fibery_key, config.fibery_workspace) as client:
+                ok = await client.verify_auth()
+            if ok:
+                status.update("[green]Fibery connection verified ✓[/green]")
+            else:
+                status.update("[red]Fibery token rejected — check the key.[/red]")
+        except Exception as exc:
+            status.update(f"[red]Fibery error: {exc}[/red]")
+
     def action_save(self) -> None:
         from clockify_cli.config import save_config
 
         api_key = self.query_one("#api-key-input", Input).value.strip()
+        fibery_key = self.query_one("#fibery-key-input", Input).value.strip()
         select = self.query_one("#workspace-select", Select)
         status = self.query_one("#settings-status", Label)
 
         if not api_key:
-            status.update("[red]API key is required.[/red]")
+            status.update("[red]Clockify API key is required.[/red]")
             return
 
         config = self.app.config  # type: ignore[attr-defined]
         config.api_key = api_key
+        if fibery_key:
+            config.fibery_api_key = fibery_key
 
         ws_value: Optional[str] = None
         try:

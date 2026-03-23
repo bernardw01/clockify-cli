@@ -2,7 +2,7 @@
 
 A local-first terminal tool that mirrors your [Clockify](https://clockify.me) workspace into a SQLite database and lets you explore it through a full interactive TUI — no browser required.
 
-> **Full product specification:** [`docs/clockify-sync.prd`](docs/clockify-sync.prd)
+> **Full product specification:** [`docs/clockify-cli-prd.md`](docs/clockify-cli-prd.md)
 
 ---
 
@@ -15,6 +15,7 @@ A local-first terminal tool that mirrors your [Clockify](https://clockify.me) wo
 | **Local SQLite store** | All data is written to `~/.local/share/clockify-cli/clockify.db` — queryable with any SQL tool |
 | **Live TUI progress** | Per-entity progress bars, record counters, and status chips update in real time during sync |
 | **Time entry browser** | Searchable table of entries with project, description, duration, and billable flag |
+| **Push to Fibery** | Pushes all synced time entries into `Agreement Management/Labor Costs` in Fibery, with full upsert (idempotent) and relation linking to Agreements and Clockify Users |
 | **Structured logging** | Every API request and response is logged to `~/.local/share/clockify-cli/logs/` |
 
 ---
@@ -89,12 +90,13 @@ export CLOCKIFY_API_KEY="your-key-here"
 
 ### Main Menu
 
-| Option | Action |
-|---|---|
-| Sync Data | Open the sync screen |
-| View Time Entries | Browse and search local time entries |
-| Settings | Change API key or workspace |
-| Quit | Exit the TUI |
+| Option | Key | Action |
+|---|---|---|
+| Sync Data | `s` | Open the sync screen |
+| Browse Entries | `e` | Browse and search local time entries |
+| Push to Fibery | `f` | Open the Fibery push screen |
+| Settings | `,` | Change API key, workspace, or Fibery key |
+| Quit | `q` | Exit the TUI |
 
 ### Sync Screen
 
@@ -108,6 +110,22 @@ export CLOCKIFY_API_KEY="your-key-here"
 
 Type to search (debounced 300 ms) across description, project name, and user name.  Press **Escape** to go back.
 
+### Push to Fibery Screen
+
+Pushes all completed time entries from the local database into Fibery's
+`Agreement Management/Labor Costs` database.
+
+| Control | Action |
+|---|---|
+| **Start Push `[s]`** | Begin the push (pre-flight → batch upsert) |
+| **Escape** | Return to Main Menu |
+
+The push is fully idempotent — running it multiple times creates no duplicates.
+Running timers (entries with no end time) are skipped automatically.
+
+**First-time setup:** enter your Fibery API key in Settings and press
+"Verify Fibery Connection" before using this screen.
+
 ---
 
 ## Project layout
@@ -116,7 +134,7 @@ Type to search (debounced 300 ms) across description, project name, and user nam
 clockify_cli/
 ├── main.py              Entry point — logging setup, TUI launch
 ├── config.py            Config load/save (~/.config/clockify-cli/config.json)
-├── constants.py         BASE_URL, file paths, rate-limit constant
+├── constants.py         BASE_URL, Fibery URLs, file paths, rate-limit constants
 ├── api/
 │   ├── client.py        Async HTTP client — rate limiting, request/response logging
 │   ├── models.py        Pydantic v2 models for all API responses
@@ -125,13 +143,17 @@ clockify_cli/
 │   ├── database.py      Async SQLite wrapper (WAL mode, FK enforcement)
 │   ├── schema.py        DDL for all 7 tables + indexes
 │   └── repositories/    One repository class per entity type
+├── fibery/
+│   ├── client.py        FiberyClient — rate-limited commands API, batch upsert
+│   ├── models.py        LaborCostPayload, PushProgress dataclasses
+│   └── push_orchestrator.py  Pre-flight lookups → SQLite read → batch upsert
 ├── sync/
 │   ├── orchestrator.py  Coordinates the full sync pipeline
 │   └── progress.py      EntityProgress / SyncProgress dataclasses
 └── tui/
     ├── app.py           ClockifyApp — DB lifecycle, screen routing
     ├── styles.tcss      Textual CSS
-    └── screens/         MainMenu, Settings, SyncScreen, TimeEntries
+    └── screens/         MainMenu, Settings, SyncScreen, TimeEntries, FiberyPush
 ```
 
 ---
@@ -178,13 +200,15 @@ Tests use `httpx.MockTransport` for API calls — no real network required.  All
 
 ```
 tests/
-├── test_config.py              7 tests
-├── api/test_client.py         16 tests
-├── db/test_database.py         6 tests
-├── db/test_repositories.py    21 tests
-└── sync/test_orchestrator.py   9 tests
-                              ──────────
-                              63 tests total
+├── test_config.py                   7 tests
+├── api/test_client.py              16 tests
+├── db/test_database.py              6 tests
+├── db/test_repositories.py         21 tests
+├── sync/test_orchestrator.py       11 tests
+├── fibery/test_client.py           17 tests
+└── fibery/test_push_orchestrator.py 11 tests
+                                   ──────────
+                                   91 tests total
 ```
 
 ---
@@ -193,7 +217,7 @@ tests/
 
 | Path | Purpose |
 |---|---|
-| `~/.config/clockify-cli/config.json` | API key, workspace ID, last sync timestamp |
+| `~/.config/clockify-cli/config.json` | API key, workspace ID, Fibery API key, last sync timestamp |
 | `~/.local/share/clockify-cli/clockify.db` | SQLite database |
 | `~/.local/share/clockify-cli/logs/` | Rotating log files (10 MB × 5) |
 
@@ -216,4 +240,4 @@ The config file is created with `chmod 600` — your API key is never logged (on
 
 ## Further reading
 
-See [`docs/clockify-sync.prd`](docs/clockify-sync.prd) for the full product requirements document, including functional requirements, acceptance criteria, known constraints, and planned future enhancements.
+See [`docs/clockify-cli-prd.md`](docs/clockify-cli-prd.md) for the full product requirements document, including functional requirements, acceptance criteria, known constraints, and planned future enhancements.

@@ -1,6 +1,6 @@
 Product Requirements Document
 Clockify CLI Sync Tool
-Version 1.0 — 2026-03-22
+Version 2.0 — 2026-03-23
 
 ════════════════════════════════════════════════════════════════════════════════
 1. OVERVIEW
@@ -23,13 +23,14 @@ progress feedback, and browse time entries — all without leaving the terminal.
   issues can be diagnosed without re-running the tool.
 • Be installable from source via uv on macOS (including iCloud Drive paths).
 
-1.3  Out of Scope (v1.0)
+1.3  Out of Scope (v2.0)
 ────────────────────────
-• Write-back to the Clockify API (the tool is read-only in v1.0).
+• Write-back to the Clockify API (the tool is read-only with respect to Clockify).
 • Multi-workspace sync in a single run.
 • Tasks, tags, or expense syncing.
 • A web or desktop GUI.
 • Windows / Linux packaging.
+• Fibery bill rate / cost rate field population (left blank; computed by Fibery formulas).
 
 
 ════════════════════════════════════════════════════════════════════════════════
@@ -110,7 +111,7 @@ FR-19  On launch, the TUI MUST detect whether credentials are configured:
        • Unconfigured → open Settings screen.
        • Configured   → open Main Menu screen.
 FR-20  Main Menu MUST offer navigation to: Sync Data, View Time Entries,
-       Settings, and Quit.
+       Push to Fibery, Settings, and Quit.
 FR-21  Sync Screen MUST display, for each entity (clients, projects, users,
        time entries):
        • A labelled progress bar showing percentage complete.
@@ -173,10 +174,10 @@ NFR-05  Portability
        uv install.
 
 NFR-06  Test Coverage
-       The codebase MUST maintain a passing test suite of ≥ 60 tests covering:
+       The codebase MUST maintain a passing test suite of ≥ 90 tests covering:
        config, DB (database + 6 repositories), API client (models + HTTP),
-       sync orchestrator.  No real API calls in tests; all HTTP is mocked via
-       httpx.MockTransport.
+       sync orchestrator, Fibery client, and push orchestrator.  No real API
+       calls in tests; all HTTP is mocked via httpx.MockTransport.
 
 
 ════════════════════════════════════════════════════════════════════════════════
@@ -196,6 +197,9 @@ sync_log            id (auto)     —                             UNIQUE(workspa
                                                                 entity_type) for upsert
 
 Schema version: 1  (increment on any breaking DDL change)
+
+Note: No schema changes are required for v2.0.  The Fibery push reads from the
+existing time_entries, users, and projects tables without modification.
 
 
 ════════════════════════════════════════════════════════════════════════════════
@@ -306,7 +310,13 @@ clockify-cli/
 │           ├── main_menu.py
 │           ├── settings.py
 │           ├── sync_screen.py
-│           └── time_entries.py
+│           ├── time_entries.py
+│           └── fibery_push_screen.py
+│   └── fibery/
+│       ├── __init__.py
+│       ├── client.py            FiberyClient — rate-limited API commands
+│       ├── models.py            LaborCostPayload, PushProgress dataclasses
+│       └── push_orchestrator.py FiberyPushOrchestrator — full reconciliation
 ├── tests/
 │   ├── test_config.py           7 tests
 │   ├── api/
@@ -314,10 +324,13 @@ clockify-cli/
 │   ├── db/
 │   │   ├── test_database.py      6 tests
 │   │   └── test_repositories.py 21 tests
-│   └── sync/
-│       └── test_orchestrator.py  9 tests  (MagicMock)
+│   ├── sync/
+│   │   └── test_orchestrator.py 11 tests  (MagicMock)
+│   └── fibery/
+│       ├── test_client.py       17 tests  (httpx.MockTransport)
+│       └── test_push_orchestrator.py  11 tests  (real DB + MagicMock client)
 ├── docs/
-│   └── clockify-sync.prd    ← this document
+│   └── clockify-cli-prd.md  ← this document
 ├── pyproject.toml
 ├── Makefile
 └── README.md
@@ -357,7 +370,7 @@ C-04  Workspace FK bootstrapping
 
 
 ════════════════════════════════════════════════════════════════════════════════
-11. FUTURE ENHANCEMENTS (POST v1.0)
+11. FUTURE ENHANCEMENTS (POST v2.0)
 ════════════════════════════════════════════════════════════════════════════════
 
 F-01  Multi-workspace support — select and sync multiple workspaces, storing
@@ -376,7 +389,7 @@ F-08  GitHub Actions CI — run the test suite on every push to main.
 
 
 ════════════════════════════════════════════════════════════════════════════════
-12. ACCEPTANCE CRITERIA (v1.0 DEFINITION OF DONE)
+12. ACCEPTANCE CRITERIA (v2.0 DEFINITION OF DONE)
 ════════════════════════════════════════════════════════════════════════════════
 
 AC-01  `make reinstall && uv run clockify-cli` launches the TUI without errors.
@@ -393,6 +406,140 @@ AC-06  Running incremental sync a second time with no new Clockify entries
        results in 0 records fetched per user (observable in the count column).
 AC-07  The log file at ~/.local/share/clockify-cli/logs/clockify-cli.log
        contains request/response entries for every API call made.
-AC-08  `uv run pytest tests/ -v` reports all tests passing (≥ 63 tests).
+AC-08  `uv run pytest tests/ -v` reports all tests passing (≥ 91 tests).
 AC-09  Time entries with tagIds: null in the API response are stored
        successfully with tag_ids = "[]" in the DB.
+AC-10  Entering a valid Fibery API key and pressing "Verify Fibery Connection"
+       in Settings shows a "Connected ✓" confirmation without error.
+AC-11  The Main Menu displays a "Push to Fibery" button and pressing it (or
+       pressing F) opens the Fibery Push screen.
+AC-12  Pressing "Start Push" on the Fibery Push screen runs the pre-flight
+       lookups, shows the "Labor Costs" progress bar advancing, and completes
+       with status "done" and pushed > 0 for a workspace with synced entries.
+AC-13  After a successful push, entries are visible in harpin-ai.fibery.io →
+       Agreement Management → Labor Costs with correct Time Log ID, hours,
+       dates, user names, project names, and billable flags.
+AC-14  Entries whose project_id matches a Fibery Agreement are linked to that
+       Agreement; entries without a match have the Agreement field left blank.
+AC-15  Running the push a second time with no changed entries completes without
+       error and results in 0 new Fibery entities created (idempotent upsert
+       via Time Log ID conflict field).
+
+
+════════════════════════════════════════════════════════════════════════════════
+13. FIBERY INTEGRATION (v2.0)
+════════════════════════════════════════════════════════════════════════════════
+
+13.1  Overview
+──────────────
+v2.0 adds a "Push to Fibery" capability that reads time entry data from the
+local SQLite database and upserts it into the Agreement Management/Labor Costs
+database in the Fibery workspace at harpin-ai.fibery.io.  No schema changes to
+the local DB are required; the push is a read-only operation against SQLite.
+
+13.2  Fibery Field Mapping
+──────────────────────────
+
+Fibery Field                              Source                         Notes
+────────────────────────────────────────  ─────────────────────────────  ──────────────────────────────
+Agreement Management/Time Log ID          time_entries.id                Upsert conflict key
+Agreement Management/Start Date Time      time_entries.start_time        ISO-8601 with .000Z millis
+Agreement Management/End Date Time        time_entries.end_time          Nullable; omitted if NULL
+Agreement Management/Seconds              time_entries.duration          Integer seconds; nullable
+Agreement Management/Clockify Hours       time_entries.duration / 3600   Float, 4 dp; nullable
+Agreement Management/Task                 time_entries.description       Text; omitted if NULL
+Agreement Management/Task ID              time_entries.task_id           Text; omitted if NULL
+Agreement Management/Project ID           time_entries.project_id        Text; omitted if NULL
+Agreement Management/Billable             1 → "Yes", 0 → "No"           Always present
+Agreement Management/User ID              users.email                    Existing data uses email
+Agreement Management/Time Entry User Name users.name                     JOIN from users table
+Agreement Management/Time Entry Project   projects.name                  JOIN from projects table
+  Name
+Agreement Management/Clockify User        relation → Clockify Users      Matched by users.id;
+                                                                         omitted if no match
+Agreement Management/Agreement            relation → Agreements          Matched by project_id →
+                                                                         Agreement.Clockify Project ID;
+                                                                         omitted if no match
+
+Fields intentionally NOT written (computed by Fibery formulas):
+  Name, Hours, Cost, Clockify Bill Rate, Clockify Cost Rate, Agreement Name,
+  Clockify User Manager, Clockify User Role, User Role, User Role Bill Rate,
+  User Role Cost Rate.
+
+13.3  Functional Requirements
+──────────────────────────────
+FR-34  The tool MUST store a Fibery API key in config.json as fibery_api_key
+       and read it from the FIBERY_API_KEY environment variable (takes priority).
+FR-35  The Settings screen MUST include a Fibery API key input field and a
+       "Verify Fibery Connection" button that tests the key against the API.
+FR-36  A "Push to Fibery" option MUST appear in the Main Menu (keyboard: f).
+FR-37  The Fibery Push screen MUST display a single "Labor Costs" progress row
+       with a progress bar, record counter (pushed/total), and status chip.
+FR-38  Before pushing, the orchestrator MUST perform parallel pre-flight
+       lookups to build:
+         clockify_user_map  : Clockify User ID → Fibery UUID
+         agreement_map      : Clockify Project ID → Fibery UUID (Agreement)
+FR-39  Running timers (end_time IS NULL) MUST be skipped and counted in the
+       "skipped" field of PushProgress; they MUST NOT be sent to Fibery.
+FR-40  The push MUST use fibery.entity.batch/create-or-update with conflict-
+       field = "Agreement Management/Time Log ID" and conflict-action =
+       "update-latest" so the operation is idempotent.
+FR-41  Entities MUST be sent in batches of FIBERY_BATCH_SIZE (50) to stay
+       within Fibery request size limits.
+FR-42  The Fibery client MUST use asyncio.Semaphore(3) to cap concurrent
+       requests to ≤ 3 per second (Fibery rate limit).
+FR-43  Entries whose project_id has no matching Agreement MUST still be pushed
+       with the Agreement relation field omitted (not an error condition).
+FR-44  Entries whose user_id has no matching Clockify User MUST still be pushed
+       with text fields (User ID, User Name) populated and the relation omitted.
+FR-45  The push log panel MUST surface: pre-flight result counts, running-timer
+       skip count, per-batch progress, and a final summary on completion.
+
+13.4  Fibery API Details
+────────────────────────
+Base URL  : https://harpin-ai.fibery.io
+Auth      : Authorization: Token <api_key>
+Endpoint  : POST /api/commands
+Payload   : JSON array of command objects
+
+Example batch upsert command:
+  {
+    "command": "fibery.entity.batch/create-or-update",
+    "args": {
+      "type": "Agreement Management/Labor Costs",
+      "conflict-field": "Agreement Management/Time Log ID",
+      "conflict-action": "update-latest",
+      "entities": [ { "fibery/id": "<uuid4>", ... }, ... ]
+    }
+  }
+
+Relations are embedded as: {"fibery/id": "<uuid>"}
+Fibery returns HTTP 200 with a result array; non-200 responses indicate errors.
+
+13.5  Push Orchestrator Flow
+─────────────────────────────
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │  FiberyPushOrchestrator.push_all(workspace_id)                          │
+  │                                                                         │
+  │  Step 0 — Pre-flight (parallel)                                         │
+  │    asyncio.gather(get_clockify_user_map(), get_agreement_map())         │
+  │    → clockify_user_map  { clockify_user_id: fibery_uuid }               │
+  │    → agreement_map      { clockify_project_id: fibery_uuid }            │
+  │                                                                         │
+  │  Step 1 — Load SQLite                                                   │
+  │    SELECT te.*, u.*, p.name FROM time_entries te                        │
+  │      LEFT JOIN users u ON te.user_id = u.id                             │
+  │      LEFT JOIN projects p ON te.project_id = p.id                      │
+  │    Partition: complete_rows (end_time NOT NULL) vs skipped (running)    │
+  │                                                                         │
+  │  Step 2 — Build payloads                                                │
+  │    For each complete row → LaborCostPayload → .to_fibery_entity()       │
+  │    Resolve relations via clockify_user_map and agreement_map            │
+  │                                                                         │
+  │  Step 3 — Batch upsert                                                  │
+  │    For each chunk of 50 payloads:                                       │
+  │      await client.batch_upsert_labor_costs(entities)                   │
+  │      progress.pushed += count; notify TUI callback                      │
+  │                                                                         │
+  │  Return PushProgress(total, pushed, skipped, errors, status)            │
+  └─────────────────────────────────────────────────────────────────────────┘
