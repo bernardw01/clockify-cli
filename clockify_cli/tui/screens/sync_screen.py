@@ -109,11 +109,19 @@ class SyncScreen(Screen):
         self._log(f"Starting {mode} sync...")
         self.query_one("#btn-start", Button).disabled = True
 
+        workspace_id = config.workspace_id
+        if not workspace_id or not isinstance(workspace_id, str) or workspace_id.startswith("Select."):
+            self._log(
+                "No workspace selected. Please go to Settings and save a workspace first."
+            )
+            self.query_one("#btn-start", Button).disabled = False
+            return
+
         try:
             async with ClockifyClient(config.get_api_key()) as client:
                 orch = SyncOrchestrator(client, db)
                 await orch.sync_all(
-                    config.workspace_id,
+                    workspace_id,
                     incremental=self.incremental,
                     on_progress=self._on_progress,
                 )

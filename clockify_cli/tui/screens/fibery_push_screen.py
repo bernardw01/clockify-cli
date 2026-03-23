@@ -80,13 +80,27 @@ class FiberyPushScreen(Screen):
         self._log("Starting full reconciliation push to Fibery...")
         self.query_one("#btn-start", Button).disabled = True
 
+        # Resolve a valid workspace ID — config may hold a sentinel string
+        # ("Select.NULL") if Settings was saved without re-fetching workspaces.
+        workspace_id = config.workspace_id
+        if not workspace_id or not isinstance(workspace_id, str) or workspace_id.startswith("Select."):
+            rows = await db.fetchall("SELECT id FROM workspaces LIMIT 1", ())
+            if not rows:
+                self._log(
+                    "No workspace found. Please sync first, then re-save Settings."
+                )
+                self.query_one("#btn-start", Button).disabled = False
+                return
+            workspace_id = rows[0]["id"]
+            self._log(f"Note: resolved workspace from DB ({workspace_id[:8]}…)")
+
         try:
             async with FiberyClient(
                 config.get_fibery_api_key(), config.fibery_workspace
             ) as client:
                 orch = FiberyPushOrchestrator(client, db)
                 result = await orch.push_all(
-                    config.workspace_id,
+                    workspace_id,
                     on_progress=self._on_progress,
                 )
 

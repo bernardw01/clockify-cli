@@ -145,7 +145,9 @@ class SettingsScreen(Screen):
         ws_value: Optional[str] = None
         try:
             raw = select.value
-            ws_value = str(raw) if raw and raw != Select.BLANK else None
+            # Workspace IDs are always plain strings; Select.BLANK / Select.NULL
+            # are sentinel objects — isinstance guards against both variants.
+            ws_value = raw if isinstance(raw, str) else None
         except Exception:
             ws_value = None
 
