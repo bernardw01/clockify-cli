@@ -104,6 +104,15 @@ async def test_get_users():
     assert users[0].email == "alice@example.com"
 
 
+def test_workspace_user_null_name_coerced_to_empty_string():
+    """Clockify returns name=null for pending/invited users — must not raise."""
+    user = WorkspaceUser.model_validate(
+        {"id": "u-pending", "name": None, "email": "pending@example.com"}
+    )
+    assert user.name == ""
+    assert user.email == "pending@example.com"
+
+
 # ── time entries ───────────────────────────────────────────────────────────────
 
 ENTRY_PAYLOAD = {

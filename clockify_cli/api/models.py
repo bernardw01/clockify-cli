@@ -101,6 +101,12 @@ class WorkspaceUser(BaseModel):
 
     model_config = {"populate_by_name": True}
 
+    @field_validator("name", mode="before")
+    @classmethod
+    def coerce_null_name(cls, v: Any) -> str:
+        """Clockify sometimes returns null for name on pending/invited users."""
+        return v if isinstance(v, str) else ""
+
     def to_db_dict(self) -> dict:
         return {
             "id": self.id,
