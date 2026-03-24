@@ -9,9 +9,7 @@ from loguru import logger
 
 from clockify_cli.api.exceptions import AuthError, ClockifyAPIError, RateLimitError
 from clockify_cli.constants import (
-    FIBERY_AGREEMENTS_TYPE,
     FIBERY_BATCH_SIZE,
-    FIBERY_CLOCKIFY_USERS_TYPE,
     FIBERY_COMMANDS_PATH,
     FIBERY_LABOR_COSTS_TYPE,
     FIBERY_MAX_CONCURRENT,
@@ -141,55 +139,24 @@ class FiberyClient:
             logger.warning(f"Fibery auth failed: {exc}")
             return False
 
-    async def get_clockify_user_map(self) -> dict[str, str]:
-        """Return {clockify_user_id: fibery_uuid} for all Clockify Users in Fibery."""
+    async def get_existing_time_log_ids(self) -> set[str]:
+        """Return the set of Time Log IDs already present in Fibery Labor Costs."""
         results = await self._post([{
             "command": "fibery.entity/query",
             "args": {
                 "query": {
-                    "q/from": FIBERY_CLOCKIFY_USERS_TYPE,
+                    "q/from": FIBERY_LABOR_COSTS_TYPE,
                     "q/select": {
-                        "id": "fibery/id",
-                        "clockify_id": "Agreement Management/Clockify User ID",
+                        "tlid": "Agreement Management/Time Log ID",
                     },
                     "q/limit": "q/no-limit",
                 }
             },
         }])
         rows: list[dict] = results[0].get("result", []) if results else []
-        mapping: dict[str, str] = {}
-        for row in rows:
-            cid = row.get("clockify_id")
-            fid = row.get("id")
-            if cid and fid:
-                mapping[cid] = fid
-        logger.info(f"Loaded {len(mapping)} Clockify Users from Fibery")
-        return mapping
-
-    async def get_agreement_map(self) -> dict[str, str]:
-        """Return {clockify_project_id: fibery_uuid} for all Agreements."""
-        results = await self._post([{
-            "command": "fibery.entity/query",
-            "args": {
-                "query": {
-                    "q/from": FIBERY_AGREEMENTS_TYPE,
-                    "q/select": {
-                        "id": "fibery/id",
-                        "project_id": "Agreement Management/Clockify Project ID",
-                    },
-                    "q/limit": "q/no-limit",
-                }
-            },
-        }])
-        rows = results[0].get("result", []) if results else []
-        mapping: dict[str, str] = {}
-        for row in rows:
-            pid = row.get("project_id")
-            fid = row.get("id")
-            if pid and fid:
-                mapping[pid] = fid
-        logger.info(f"Loaded {len(mapping)} Agreements from Fibery")
-        return mapping
+        existing = {r["tlid"] for r in rows if r.get("tlid")}
+        logger.info(f"Pre-flight: {len(existing)} existing Labor Cost entries in Fibery")
+        return existing
 
     async def batch_upsert_labor_costs(self, entities: list[dict[str, Any]]) -> int:
         """Batch create-or-update Labor Cost entities using Time Log ID as conflict key.

@@ -106,13 +106,15 @@ class FiberyPushScreen(Screen):
 
             if result.status == "done":
                 self._log(
-                    f"Push complete! {result.pushed:,} pushed, "
+                    f"Push complete! {result.created:,} new, "
+                    f"{result.updated:,} updated, "
                     f"{result.skipped:,} skipped (running timers)."
                 )
             else:
                 self._log(
                     f"Push finished with errors: {result.error_message}  "
-                    f"({result.pushed:,} pushed, {result.errors:,} failed)"
+                    f"({result.created:,} new, {result.updated:,} updated, "
+                    f"{result.errors:,} failed)"
                 )
         except Exception as exc:
             self._log(f"Push error: {exc}")

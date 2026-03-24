@@ -44,13 +44,11 @@ def _make_row(
 
 
 def _make_mock_client(
-    user_map: dict | None = None,
-    agreement_map: dict | None = None,
+    existing_ids: set | None = None,
     upsert_count: int = 1,
 ) -> MagicMock:
     client = MagicMock()
-    client.get_clockify_user_map = AsyncMock(return_value=user_map or {})
-    client.get_agreement_map = AsyncMock(return_value=agreement_map or {})
+    client.get_existing_time_log_ids = AsyncMock(return_value=existing_ids or set())
     client.batch_upsert_labor_costs = AsyncMock(return_value=upsert_count)
     return client
 
@@ -59,37 +57,37 @@ def _make_mock_client(
 
 def test_build_payload_maps_fields_correctly():
     row = _make_row()
-    payload = _build_payload(row, {"user-1": "fibery-user-1"}, {"proj-1": "fibery-ag-1"})
+    payload = _build_payload(row)
     assert payload.time_log_id == "te-1"
     assert payload.seconds == 3600
     assert payload.hours == 1.0
     assert payload.billable == "Yes"
     assert payload.user_id_text == "alice@example.com"
-    assert payload.clockify_user_fibery_id == "fibery-user-1"
-    assert payload.agreement_fibery_id == "fibery-ag-1"
 
 
 def test_build_payload_billable_false():
     row = _make_row(billable=0)
-    payload = _build_payload(row, {}, {})
+    payload = _build_payload(row)
     assert payload.billable == "No"
 
 
-def test_build_payload_unmatched_user_is_none():
-    row = _make_row(user_id="unknown-user")
-    payload = _build_payload(row, {}, {})
-    assert payload.clockify_user_fibery_id is None
+def test_build_payload_maps_user_fields():
+    row = _make_row(user_name="Bob", user_email="bob@example.com")
+    payload = _build_payload(row)
+    assert payload.user_name == "Bob"
+    assert payload.user_id_text == "bob@example.com"
 
 
-def test_build_payload_unmatched_project_agreement_is_none():
-    row = _make_row(project_id="unknown-proj")
-    payload = _build_payload(row, {}, {})
-    assert payload.agreement_fibery_id is None
+def test_build_payload_null_project_gives_none():
+    row = _make_row(project_id=None, project_name=None)
+    payload = _build_payload(row)
+    assert payload.project_id is None
+    assert payload.project_name is None
 
 
 def test_build_payload_null_duration_gives_null_hours():
     row = _make_row(duration=None)
-    payload = _build_payload(row, {}, {})
+    payload = _build_payload(row)
     assert payload.seconds is None
     assert payload.hours is None
 
@@ -148,7 +146,24 @@ async def test_push_all_pushes_complete_entries(tmp_path: Path):
     assert progress.pushed == 1
     assert progress.skipped == 0
     assert progress.errors == 0
+    assert progress.created == 1   # te-1 not in existing_ids (empty set)
+    assert progress.updated == 0
     client.batch_upsert_labor_costs.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_push_all_tracks_updated_entries(tmp_path: Path):
+    """Entries whose ID is already in Fibery are counted as updated."""
+    db = Database(tmp_path / "test.db")
+    async with db:
+        await _seed_db(db, [_make_row(id="te-existing")])
+        client = _make_mock_client(existing_ids={"te-existing"}, upsert_count=1)
+        orch = FiberyPushOrchestrator(client, db)
+        progress = await orch.push_all(WS_ID)
+
+    assert progress.status == "done"
+    assert progress.created == 0
+    assert progress.updated == 1
 
 
 @pytest.mark.asyncio
@@ -189,8 +204,7 @@ async def test_push_all_preflight_failure_returns_error(tmp_path: Path):
     db = Database(tmp_path / "test.db")
     async with db:
         client = MagicMock()
-        client.get_clockify_user_map = AsyncMock(side_effect=Exception("network error"))
-        client.get_agreement_map = AsyncMock(return_value={})
+        client.get_existing_time_log_ids = AsyncMock(side_effect=Exception("network error"))
         orch = FiberyPushOrchestrator(client, db)
         progress = await orch.push_all(WS_ID)
 

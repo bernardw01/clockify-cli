@@ -63,17 +63,10 @@ class FiberyPushOrchestrator:
         progress.status = "running"
         await _notify()
 
-        # ── Step 0: pre-flight lookups ────────────────────────────────────────
+        # ── Step 0: pre-flight — fetch existing Time Log IDs ──────────────────
         try:
-            logger.info("Pre-flight: loading Clockify User and Agreement maps from Fibery")
-            user_map, agreement_map = await asyncio.gather(
-                self._client.get_clockify_user_map(),
-                self._client.get_agreement_map(),
-            )
-            logger.info(
-                f"Pre-flight complete: {len(user_map)} users, "
-                f"{len(agreement_map)} agreements"
-            )
+            logger.info("Pre-flight: fetching existing Time Log IDs from Fibery")
+            existing_ids = await self._client.get_existing_time_log_ids()
         except Exception as exc:
             progress.status = "error"
             progress.error_message = f"Pre-flight failed: {exc}"
@@ -97,10 +90,15 @@ class FiberyPushOrchestrator:
 
         progress.total = len(complete_rows)
         progress.skipped = running_count
+        progress.created = sum(1 for r in complete_rows if r["id"] not in existing_ids)
+        progress.updated = sum(1 for r in complete_rows if r["id"] in existing_ids)
+
         if running_count:
             logger.info(f"Skipping {running_count} running-timer entries (no end_time)")
-
-        logger.info(f"Loaded {len(complete_rows)} completed entries from SQLite")
+        logger.info(
+            f"Loaded {len(complete_rows)} completed entries from SQLite "
+            f"({progress.created} new, {progress.updated} to update)"
+        )
         await _notify()
 
         if progress.total == 0:
@@ -109,23 +107,7 @@ class FiberyPushOrchestrator:
             return progress
 
         # ── Step 2: build payloads ────────────────────────────────────────────
-        payloads = [
-            _build_payload(row, user_map, agreement_map)
-            for row in complete_rows
-        ]
-
-        unmatched_users = sum(1 for p in payloads if not p.clockify_user_fibery_id)
-        unmatched_agreements = sum(1 for p in payloads if not p.agreement_fibery_id)
-        if unmatched_users:
-            logger.info(
-                f"{unmatched_users} entries have no matching Fibery Clockify User "
-                f"(text fields still populated)"
-            )
-        if unmatched_agreements:
-            logger.info(
-                f"{unmatched_agreements} entries have no matching Agreement "
-                f"(Agreement field will be blank)"
-            )
+        payloads = [_build_payload(row) for row in complete_rows]
 
         # ── Step 3: batch upsert ──────────────────────────────────────────────
         for batch_start in range(0, len(payloads), FIBERY_BATCH_SIZE):
@@ -150,7 +132,7 @@ class FiberyPushOrchestrator:
         if progress.errors:
             progress.error_message = f"{progress.errors} entries failed to push"
         logger.info(
-            f"Fibery push complete: {progress.pushed} pushed, "
+            f"Fibery push complete: {progress.created} new, {progress.updated} updated, "
             f"{progress.skipped} skipped, {progress.errors} errors"
         )
         await _notify()
@@ -159,11 +141,7 @@ class FiberyPushOrchestrator:
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-def _build_payload(
-    row: dict,
-    user_map: dict[str, str],
-    agreement_map: dict[str, str],
-) -> LaborCostPayload:
+def _build_payload(row: dict) -> LaborCostPayload:
     """Map a SQLite row (with joined user/project fields) to a LaborCostPayload."""
     duration: Optional[int] = row["duration"]
     hours: Optional[float] = round(duration / 3600.0, 4) if duration else None
@@ -181,6 +159,4 @@ def _build_payload(
         user_id_text=row["user_email"] or None,
         user_name=row["user_name"] or None,
         project_name=row["project_name"] or None,
-        clockify_user_fibery_id=user_map.get(row["user_id"]),
-        agreement_fibery_id=agreement_map.get(row["project_id"] or ""),
     )

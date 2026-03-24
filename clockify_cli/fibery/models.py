@@ -30,16 +30,16 @@ class LaborCostPayload:
     user_id_text: Optional[str]               # → User ID  (email)
     user_name: Optional[str]                  # → Time Entry User Name
     project_name: Optional[str]               # → Time Entry Project Name
-    clockify_user_fibery_id: Optional[str]    # resolved relation; None if unmatched
-    agreement_fibery_id: Optional[str]        # resolved relation; None if unmatched
 
     def to_fibery_entity(self) -> dict:
         """Build the entity dict for fibery.entity.batch/create-or-update.
 
         Fibery requires every entity in a batch to carry the *same set of
-        fields*.  Optional fields are therefore always present — set to None
-        (JSON null) when absent rather than omitted.  Relation fields use
-        {"fibery/id": uuid} when matched, or None when unmatched.
+        fields*.  Optional fields are always present — set to None (JSON null)
+        when absent rather than omitted.
+
+        Note: The Clockify User and Agreement relation fields are readonly in
+        the Fibery Labor Costs schema and must NOT be included in the payload.
         """
         return {
             "Agreement Management/Time Log ID": self.time_log_id,
@@ -56,14 +56,6 @@ class LaborCostPayload:
             "Agreement Management/User ID": self.user_id_text,
             "Agreement Management/Time Entry User Name": self.user_name,
             "Agreement Management/Time Entry Project Name": self.project_name,
-            "Agreement Management/Clockify User": (
-                {"fibery/id": self.clockify_user_fibery_id}
-                if self.clockify_user_fibery_id else None
-            ),
-            "Agreement Management/Agreement": (
-                {"fibery/id": self.agreement_fibery_id}
-                if self.agreement_fibery_id else None
-            ),
         }
 
 
@@ -73,6 +65,8 @@ class PushProgress:
 
     total: int = 0          # total entries to push (excluding running timers)
     pushed: int = 0         # entries successfully pushed so far
+    created: int = 0        # subset of total that are new (not yet in Fibery)
+    updated: int = 0        # subset of total that already exist in Fibery
     skipped: int = 0        # entries skipped (running timers, etc.)
     errors: int = 0         # entries that failed
     status: str = "pending" # pending | running | done | error

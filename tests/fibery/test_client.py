@@ -52,60 +52,49 @@ async def test_verify_auth_returns_false_on_401():
     assert await client.verify_auth() is False
 
 
-# ── get_clockify_user_map ─────────────────────────────────────────────────────
+# ── get_existing_time_log_ids ─────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_get_clockify_user_map_returns_mapping():
+async def test_get_existing_time_log_ids_returns_set():
     transport = _make_transport([
         (200, [{
             "success": True,
             "result": [
-                {"id": "fibery-uuid-1", "clockify_id": "clockify-id-1"},
-                {"id": "fibery-uuid-2", "clockify_id": "clockify-id-2"},
+                {"tlid": "te-abc123"},
+                {"tlid": "te-def456"},
             ],
         }]),
     ])
     client = await _make_client(transport)
-    mapping = await client.get_clockify_user_map()
-    assert mapping == {
-        "clockify-id-1": "fibery-uuid-1",
-        "clockify-id-2": "fibery-uuid-2",
-    }
+    ids = await client.get_existing_time_log_ids()
+    assert ids == {"te-abc123", "te-def456"}
 
 
 @pytest.mark.asyncio
-async def test_get_clockify_user_map_skips_rows_with_null_ids():
+async def test_get_existing_time_log_ids_skips_null_entries():
     transport = _make_transport([
         (200, [{
             "success": True,
             "result": [
-                {"id": "fibery-uuid-1", "clockify_id": "clockify-id-1"},
-                {"id": None, "clockify_id": "clockify-id-2"},   # bad row
-                {"id": "fibery-uuid-3", "clockify_id": None},   # bad row
+                {"tlid": "te-abc123"},
+                {"tlid": None},      # manually created entry (no Time Log ID)
+                {},                  # missing field entirely
             ],
         }]),
     ])
     client = await _make_client(transport)
-    mapping = await client.get_clockify_user_map()
-    assert mapping == {"clockify-id-1": "fibery-uuid-1"}
+    ids = await client.get_existing_time_log_ids()
+    assert ids == {"te-abc123"}
 
-
-# ── get_agreement_map ─────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_get_agreement_map_returns_mapping():
+async def test_get_existing_time_log_ids_empty_db():
     transport = _make_transport([
-        (200, [{
-            "success": True,
-            "result": [
-                {"id": "ag-uuid-1", "project_id": "proj-1"},
-                {"id": "ag-uuid-2", "project_id": None},  # no Clockify project → skip
-            ],
-        }]),
+        (200, [{"success": True, "result": []}]),
     ])
     client = await _make_client(transport)
-    mapping = await client.get_agreement_map()
-    assert mapping == {"proj-1": "ag-uuid-1"}
+    ids = await client.get_existing_time_log_ids()
+    assert ids == set()
 
 
 # ── batch_upsert_labor_costs ──────────────────────────────────────────────────
@@ -174,8 +163,6 @@ def _make_payload(**kwargs) -> LaborCostPayload:
         user_id_text="alice@example.com",
         user_name="Alice",
         project_name="Project Alpha",
-        clockify_user_fibery_id=None,
-        agreement_fibery_id=None,
     )
     defaults.update(kwargs)
     return LaborCostPayload(**defaults)
@@ -202,29 +189,14 @@ def test_to_fibery_entity_already_has_millis_unchanged():
 def test_to_fibery_entity_includes_none_fields_as_null():
     """All fields must be present in every entity (Fibery batch shape requirement)."""
     entity = _make_payload(task=None, task_id=None).to_fibery_entity()
-    # Fields must be present (even if null) so all entities share the same shape
     assert "Agreement Management/Task" in entity
     assert entity["Agreement Management/Task"] is None
     assert "Agreement Management/Task ID" in entity
     assert entity["Agreement Management/Task ID"] is None
 
 
-def test_to_fibery_entity_includes_clockify_user_relation():
-    entity = _make_payload(clockify_user_fibery_id="fibery-user-uuid").to_fibery_entity()
-    assert entity["Agreement Management/Clockify User"] == {"fibery/id": "fibery-user-uuid"}
-
-
-def test_to_fibery_entity_includes_agreement_relation():
-    entity = _make_payload(agreement_fibery_id="fibery-ag-uuid").to_fibery_entity()
-    assert entity["Agreement Management/Agreement"] == {"fibery/id": "fibery-ag-uuid"}
-
-
-def test_to_fibery_entity_sets_relations_to_none_when_unmatched():
-    """Unmatched relations must be present as null (not omitted) for batch shape uniformity."""
-    entity = _make_payload(
-        clockify_user_fibery_id=None, agreement_fibery_id=None
-    ).to_fibery_entity()
-    assert "Agreement Management/Clockify User" in entity
-    assert entity["Agreement Management/Clockify User"] is None
-    assert "Agreement Management/Agreement" in entity
-    assert entity["Agreement Management/Agreement"] is None
+def test_to_fibery_entity_excludes_readonly_relation_fields():
+    """Clockify User and Agreement are readonly in Fibery — must not be sent."""
+    entity = _make_payload().to_fibery_entity()
+    assert "Agreement Management/Clockify User" not in entity
+    assert "Agreement Management/Agreement" not in entity
