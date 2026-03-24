@@ -102,6 +102,14 @@ CREATE TABLE IF NOT EXISTS sync_log (
 )
 """
 
+FIBERY_PUSH_LOG_DDL = """
+CREATE TABLE IF NOT EXISTS fibery_push_log (
+    workspace_id        TEXT PRIMARY KEY,
+    last_pushed_at      TEXT,
+    FOREIGN KEY (workspace_id) REFERENCES workspaces(id)
+)
+"""
+
 # Ordered list of all statements to run at startup
 ALL_DDL: list[str] = [
     SCHEMA_VERSION_DDL,
@@ -112,6 +120,7 @@ ALL_DDL: list[str] = [
     TIME_ENTRIES_DDL,
     *TIME_ENTRIES_INDEXES,
     SYNC_LOG_DDL,
+    FIBERY_PUSH_LOG_DDL,
 ]
 
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2

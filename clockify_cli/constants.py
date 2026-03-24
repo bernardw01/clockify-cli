@@ -24,4 +24,4 @@ FIBERY_BATCH_SIZE = 50      # entities per batch/create-or-update call
 
 # App metadata
 APP_NAME = "Clockify CLI"
-APP_VERSION = "0.2.0"
+APP_VERSION = "0.3.0"

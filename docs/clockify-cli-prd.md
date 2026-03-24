@@ -1,6 +1,6 @@
 Product Requirements Document
 Clockify CLI Sync Tool
-Version 2.0 — 2026-03-23
+Version 3.0 — 2026-03-23
 
 ════════════════════════════════════════════════════════════════════════════════
 1. OVERVIEW
@@ -494,6 +494,20 @@ FR-44  Entries whose user_id has no matching Clockify User MUST still be pushed
        with text fields (User ID, User Name) populated and the relation omitted.
 FR-45  The push log panel MUST surface: pre-flight result counts, running-timer
        skip count, per-batch progress, and a final summary on completion.
+FR-46  The push MUST operate in incremental mode by default: only time entries
+       whose fetched_at timestamp is newer than fibery_push_log.last_pushed_at
+       for the workspace are sent.  On the very first push (no log row) all
+       completed entries are sent.
+FR-47  The fibery_push_log table MUST record the start timestamp of the push
+       as last_pushed_at only when the push completes with zero batch errors,
+       so a partial failure triggers a full retry on the next run.
+FR-48  The push screen MUST display the mode ("Incremental push since …" or
+       "Full push") in the log panel before the push begins.
+FR-49  PushProgress MUST expose created, updated, is_incremental, and
+       last_pushed_at fields so the TUI can report exactly how many entries
+       were new versus updated in the current run.
+FR-50  The completion message MUST follow the format:
+       "Push complete! X new, Y updated, Z skipped (running timers)."
 
 13.4  Fibery API Details
 ────────────────────────

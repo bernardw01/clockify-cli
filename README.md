@@ -15,7 +15,7 @@ A local-first terminal tool that mirrors your [Clockify](https://clockify.me) wo
 | **Local SQLite store** | All data is written to `~/.local/share/clockify-cli/clockify.db` — queryable with any SQL tool |
 | **Live TUI progress** | Per-entity progress bars, record counters, and status chips update in real time during sync |
 | **Time entry browser** | Searchable table of entries with project, description, duration, and billable flag |
-| **Push to Fibery** | Pushes all synced time entries into `Agreement Management/Labor Costs` in Fibery, with full upsert (idempotent) and relation linking to Agreements and Clockify Users |
+| **Push to Fibery** | Pushes synced time entries into `Agreement Management/Labor Costs` in Fibery — incremental by default (only entries updated since the last push), full on first run |
 | **Structured logging** | Every API request and response is logged to `~/.local/share/clockify-cli/logs/` |
 
 ---
@@ -112,7 +112,7 @@ Type to search (debounced 300 ms) across description, project name, and user nam
 
 ### Push to Fibery Screen
 
-Pushes all completed time entries from the local database into Fibery's
+Pushes completed time entries from the local database into Fibery's
 `Agreement Management/Labor Costs` database.
 
 | Control | Action |
@@ -120,8 +120,9 @@ Pushes all completed time entries from the local database into Fibery's
 | **Start Push `[s]`** | Begin the push (pre-flight → batch upsert) |
 | **Escape** | Return to Main Menu |
 
-The push is fully idempotent — running it multiple times creates no duplicates.
-Running timers (entries with no end time) are skipped automatically.
+**Incremental by default** — on the first run all entries are pushed; on subsequent runs only entries whose Clockify data was re-synced after the previous push are sent.  The push cursor advances only when the run completes without errors, so a failed run is fully retried next time.
+
+The completion message reports exactly how many entries were **new** (created in Fibery), **updated** (already existed), and **skipped** (running timers with no end time).
 
 **First-time setup:** enter your Fibery API key in Settings and press
 "Verify Fibery Connection" before using this screen.
@@ -167,6 +168,7 @@ workspaces
     └── users            (FK → workspaces)
     └── time_entries     (FK → workspaces, users, projects)
     └── sync_log         last sync status per entity type
+    └── fibery_push_log  last successful Fibery push timestamp per workspace
 ```
 
 The database lives at `~/.local/share/clockify-cli/clockify.db` and can be queried directly:
@@ -206,9 +208,9 @@ tests/
 ├── db/test_repositories.py         21 tests
 ├── sync/test_orchestrator.py       11 tests
 ├── fibery/test_client.py           17 tests
-└── fibery/test_push_orchestrator.py 11 tests
+└── fibery/test_push_orchestrator.py 16 tests
                                    ──────────
-                                   91 tests total
+                                   95 tests total
 ```
 
 ---

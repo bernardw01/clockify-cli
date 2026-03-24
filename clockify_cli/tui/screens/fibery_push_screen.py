@@ -77,7 +77,6 @@ class FiberyPushScreen(Screen):
         config = self.app.config  # type: ignore[attr-defined]
         db = self.app.db          # type: ignore[attr-defined]
 
-        self._log("Starting full reconciliation push to Fibery...")
         self.query_one("#btn-start", Button).disabled = True
 
         # Resolve a valid workspace ID — config may hold a sentinel string
@@ -93,6 +92,17 @@ class FiberyPushScreen(Screen):
                 return
             workspace_id = rows[0]["id"]
             self._log(f"Note: resolved workspace from DB ({workspace_id[:8]}…)")
+
+        # Show whether this will be a full or incremental push before starting
+        log_row = await db.fetchone(
+            "SELECT last_pushed_at FROM fibery_push_log WHERE workspace_id = ?",
+            (workspace_id,),
+        )
+        last_pushed_at = log_row["last_pushed_at"] if log_row else None
+        if last_pushed_at:
+            self._log(f"Incremental push — only entries synced after {last_pushed_at}")
+        else:
+            self._log("Full push — no previous push recorded, sending all entries")
 
         try:
             async with FiberyClient(

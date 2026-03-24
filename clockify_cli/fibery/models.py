@@ -63,14 +63,16 @@ class LaborCostPayload:
 class PushProgress:
     """Live progress state for a Fibery push run."""
 
-    total: int = 0          # total entries to push (excluding running timers)
-    pushed: int = 0         # entries successfully pushed so far
-    created: int = 0        # subset of total that are new (not yet in Fibery)
-    updated: int = 0        # subset of total that already exist in Fibery
-    skipped: int = 0        # entries skipped (running timers, etc.)
-    errors: int = 0         # entries that failed
-    status: str = "pending" # pending | running | done | error
+    total: int = 0              # entries to push in this run (incremental or full)
+    pushed: int = 0             # entries successfully pushed so far
+    created: int = 0            # subset of total that are new (not yet in Fibery)
+    updated: int = 0            # subset of total that already exist in Fibery
+    skipped: int = 0            # running-timer entries skipped in this run
+    errors: int = 0             # entries that failed
+    status: str = "pending"     # pending | running | done | error
     error_message: Optional[str] = None
+    is_incremental: bool = False  # True when filtered to records changed since last push
+    last_pushed_at: Optional[str] = None  # ISO datetime of previous push (None = first push)
 
     @property
     def percent(self) -> float:
