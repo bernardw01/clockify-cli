@@ -130,9 +130,10 @@ class SyncOrchestrator:
             ep.status = "done"
         except Exception as exc:
             ep.status = "error"
-            ep.error = str(exc)
-            await self._sync_log.fail_sync(progress.workspace_id, entity_type, str(exc))
-            logger.error(f"Sync failed for {entity_type}: {exc}")
+            exc_desc = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+            ep.error = exc_desc
+            await self._sync_log.fail_sync(progress.workspace_id, entity_type, exc_desc)
+            logger.error(f"Sync failed for {entity_type}: {exc_desc}")
         await notify()
 
     async def _sync_clients(self, workspace_id: str, progress: SyncProgress) -> None:

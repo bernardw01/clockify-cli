@@ -20,6 +20,19 @@ from clockify_cli.constants import BASE_URL, DEFAULT_PAGE_SIZE, MAX_REQUESTS_PER
 # Max characters of response body to log at DEBUG level
 _MAX_BODY_LOG = 500
 
+# Hard asyncio deadline per HTTP call (guards against httpx per-chunk timeout not firing)
+_REQUEST_HARD_TIMEOUT = 90.0
+# Retry configuration for transient network/timeout errors
+_MAX_RETRIES = 3
+_RETRY_BACKOFF_BASE = 2.0  # seconds: 2s, 4s, 8s
+_RETRYABLE = (
+    TimeoutError,          # asyncio.TimeoutError (== TimeoutError in Python 3.11+)
+    httpx.TimeoutException,
+    httpx.ConnectError,
+    httpx.ReadError,
+    httpx.RemoteProtocolError,
+)
+
 
 def _mask_key(key: str) -> str:
     """Show only last 4 chars of API key in logs."""
@@ -73,7 +86,10 @@ class ClockifyClient:
                 "X-Api-Key": self._api_key,
                 "Content-Type": "application/json",
             },
-            timeout=30.0,
+            # Per-operation timeouts (connect, read, write, pool).
+            # NOTE: read=30 is a *per-chunk* deadline, not a total-request deadline.
+            # _get_raw() adds asyncio.wait_for() as an absolute hard deadline.
+            timeout=httpx.Timeout(connect=10.0, read=30.0, write=10.0, pool=5.0),
         )
         return self
 
@@ -91,13 +107,46 @@ class ClockifyClient:
             raise RuntimeError("Use ClockifyClient as an async context manager")
         return self._http
 
+    async def _get_raw(self, path: str, params: dict | None = None) -> httpx.Response:
+        """Single GET with semaphore, hard asyncio timeout, and retry-with-backoff.
+
+        Guards against httpx's per-chunk read timeout not firing when a server
+        stalls mid-response body (observed as an 18-minute hang on Clockify).
+        """
+        url = f"{BASE_URL}{path}"
+        last_exc: BaseException = RuntimeError("no attempts made")
+        for attempt in range(1, _MAX_RETRIES + 1):
+            try:
+                async with self._sem:
+                    started = _log_request("GET", url, params)
+                    resp = await asyncio.wait_for(
+                        self._client.get(path, params=params),
+                        timeout=_REQUEST_HARD_TIMEOUT,
+                    )
+                    _log_response("GET", url, resp, started)
+                return resp
+            except _RETRYABLE as exc:
+                last_exc = exc
+                exc_desc = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+                if attempt == _MAX_RETRIES:
+                    logger.error(
+                        f"GET {path} failed after {attempt} attempt(s): {exc_desc}"
+                    )
+                    break
+                wait = _RETRY_BACKOFF_BASE ** (attempt - 1)
+                logger.warning(
+                    f"GET {path} failed (attempt {attempt}/{_MAX_RETRIES}), "
+                    f"retrying in {wait:.0f}s: {exc_desc}"
+                )
+                await asyncio.sleep(wait)
+        raise ClockifyAPIError(
+            f"GET {path} failed after {_MAX_RETRIES} attempts: "
+            f"{type(last_exc).__name__}: {last_exc}"
+        )
+
     async def _get(self, path: str, params: dict | None = None) -> Any:
         """Single GET with rate-limit semaphore, full logging, and error mapping."""
-        url = f"{BASE_URL}{path}"
-        async with self._sem:
-            started = _log_request("GET", url, params)
-            resp = await self._client.get(path, params=params)
-            _log_response("GET", url, resp, started)
+        resp = await self._get_raw(path, params)
 
         if resp.status_code == 200:
             data = resp.json()
@@ -199,12 +248,7 @@ class ClockifyClient:
 
         while True:
             params["page"] = page
-            url = f"{BASE_URL}{path}"
-
-            async with self._sem:
-                started = _log_request("GET", url, params)
-                resp = await self._client.get(path, params=params)
-                _log_response("GET", url, resp, started)
+            resp = await self._get_raw(path, params)
 
             if resp.status_code == 401:
                 logger.error("Auth failure fetching time entries")
