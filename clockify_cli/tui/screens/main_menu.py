@@ -25,6 +25,7 @@ class MainMenuScreen(Screen):
             yield Label(f"[bold]{APP_NAME}[/bold] v{APP_VERSION}", id="menu-title")
             yield Label("", id="workspace-label")
             yield Label("", id="sync-status")
+            yield Label("", id="fibery-push-status")
             yield Button("  Sync Data", id="btn-sync", classes="menu-item")
             yield Button("  Browse Entries", id="btn-entries", classes="menu-item")
             yield Button("  Push to Fibery", id="btn-fibery", classes="menu-item")
@@ -35,10 +36,12 @@ class MainMenuScreen(Screen):
     def on_mount(self) -> None:
         self.title = APP_NAME
         self._refresh_labels()
+        self.run_worker(self._refresh_fibery_push_label(), exclusive=False)
 
     def on_screen_resume(self) -> None:
         """Re-read config/db each time we return to the menu."""
         self._refresh_labels()
+        self.run_worker(self._refresh_fibery_push_label(), exclusive=False)
 
     def _refresh_labels(self) -> None:
         config = self.app.config  # type: ignore[attr-defined]
@@ -54,6 +57,31 @@ class MainMenuScreen(Screen):
             sync_label.update(f"Last sync: {config.last_sync[:19].replace('T', ' ')} UTC")
         else:
             sync_label.update("[dim]Never synced[/dim]")
+
+    async def _refresh_fibery_push_label(self) -> None:
+        try:
+            db = self.app.db  # type: ignore[attr-defined]
+            config = self.app.config  # type: ignore[attr-defined]
+            workspace_id = config.workspace_id
+            if not workspace_id or str(workspace_id).startswith("Select."):
+                rows = await db.fetchall("SELECT id FROM workspaces LIMIT 1", ())
+                workspace_id = rows[0]["id"] if rows else None
+            if workspace_id:
+                row = await db.fetchone(
+                    "SELECT last_pushed_at FROM fibery_push_log WHERE workspace_id = ?",
+                    (workspace_id,),
+                )
+                last_pushed_at = row["last_pushed_at"] if row else None
+            else:
+                last_pushed_at = None
+            lbl = self.query_one("#fibery-push-status", Label)
+            if last_pushed_at:
+                ts = last_pushed_at[:19].replace("T", " ")
+                lbl.update(f"Last Fibery push: {ts} UTC")
+            else:
+                lbl.update("[dim]Never pushed to Fibery[/dim]")
+        except Exception:
+            pass
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         btn_id = event.button.id

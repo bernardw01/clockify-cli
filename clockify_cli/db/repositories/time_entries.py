@@ -10,15 +10,45 @@ class TimeEntryRepository:
         self._db = db
 
     async def upsert_many(self, entries: list[dict], workspace_id: str) -> int:
-        """Bulk upsert time entries. Returns count of rows written."""
+        """Bulk upsert time entries. Returns count of rows written.
+
+        fetched_at is only updated when the entry content actually changed so that
+        the Fibery incremental-push filter (fetched_at > last_pushed_at) does not
+        flag every entry as modified after every Clockify sync.
+        """
         if not entries:
             return 0
         sql = """
-            INSERT OR REPLACE INTO time_entries
+            INSERT INTO time_entries
                 (id, workspace_id, user_id, project_id, description,
                  start_time, end_time, duration, billable, is_locked,
                  task_id, tag_ids)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                workspace_id = excluded.workspace_id,
+                user_id      = excluded.user_id,
+                project_id   = excluded.project_id,
+                description  = excluded.description,
+                start_time   = excluded.start_time,
+                end_time     = excluded.end_time,
+                duration     = excluded.duration,
+                billable     = excluded.billable,
+                is_locked    = excluded.is_locked,
+                task_id      = excluded.task_id,
+                tag_ids      = excluded.tag_ids,
+                fetched_at   = CASE
+                    WHEN time_entries.project_id   IS NOT excluded.project_id
+                      OR time_entries.description  IS NOT excluded.description
+                      OR time_entries.start_time   IS NOT excluded.start_time
+                      OR time_entries.end_time     IS NOT excluded.end_time
+                      OR time_entries.duration     IS NOT excluded.duration
+                      OR time_entries.billable     IS NOT excluded.billable
+                      OR time_entries.is_locked    IS NOT excluded.is_locked
+                      OR time_entries.task_id      IS NOT excluded.task_id
+                      OR time_entries.tag_ids      IS NOT excluded.tag_ids
+                    THEN datetime('now')
+                    ELSE time_entries.fetched_at
+                END
         """
         rows = []
         for e in entries:

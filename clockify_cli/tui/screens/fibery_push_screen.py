@@ -17,13 +17,20 @@ class FiberyPushScreen(Screen):
         Binding("s", "start_push", "Start Push"),
     ]
 
+    DEFAULT_CSS = """
+    #sync-header { height: 7; }
+    #last-push-label { color: $success; text-style: bold; margin-top: 1; }
+    #last-push-label.never-pushed { color: $warning; }
+    """
+
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Static(id="sync-screen"):          # reuse sync-screen CSS
             with Static(id="sync-header"):
                 yield Label("Push to Fibery", id="sync-header-title")
+                yield Label("", id="last-push-label", classes="never-pushed")
                 yield Label(
-                    "Pushes all completed time entries → Fibery Labor Costs",
+                    "Only entries changed since last push will be sent",
                     id="sync-mode-label",
                 )
 
@@ -53,6 +60,42 @@ class FiberyPushScreen(Screen):
 
     def on_mount(self) -> None:
         self.title = "Push to Fibery"
+        self.run_worker(self._load_last_push_label(), exclusive=False)
+
+    async def _load_last_push_label(self) -> None:
+        """Query the DB for last push time and update the banner label."""
+        try:
+            db = self.app.db  # type: ignore[attr-defined]
+            config = self.app.config  # type: ignore[attr-defined]
+            workspace_id = config.workspace_id
+            if workspace_id and not str(workspace_id).startswith("Select."):
+                row = await db.fetchone(
+                    "SELECT last_pushed_at FROM fibery_push_log WHERE workspace_id = ?",
+                    (workspace_id,),
+                )
+            else:
+                rows = await db.fetchall("SELECT id FROM workspaces LIMIT 1", ())
+                workspace_id = rows[0]["id"] if rows else None
+                row = await db.fetchone(
+                    "SELECT last_pushed_at FROM fibery_push_log WHERE workspace_id = ?",
+                    (workspace_id,),
+                ) if workspace_id else None
+            self._update_last_push_label(row["last_pushed_at"] if row else None)
+        except Exception:
+            pass
+
+    def _update_last_push_label(self, last_pushed_at: str | None) -> None:
+        try:
+            lbl = self.query_one("#last-push-label", Label)
+            if last_pushed_at:
+                ts = last_pushed_at[:19].replace("T", " ")
+                lbl.update(f"Last push: {ts} UTC")
+                lbl.remove_class("never-pushed")
+            else:
+                lbl.update("Last push: never")
+                lbl.add_class("never-pushed")
+        except Exception:
+            pass
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-start":
@@ -93,14 +136,14 @@ class FiberyPushScreen(Screen):
             workspace_id = rows[0]["id"]
             self._log(f"Note: resolved workspace from DB ({workspace_id[:8]}…)")
 
-        # Show whether this will be a full or incremental push before starting
+        # Log whether this will be a full or incremental push
         log_row = await db.fetchone(
             "SELECT last_pushed_at FROM fibery_push_log WHERE workspace_id = ?",
             (workspace_id,),
         )
         last_pushed_at = log_row["last_pushed_at"] if log_row else None
         if last_pushed_at:
-            self._log(f"Incremental push — only entries synced after {last_pushed_at}")
+            self._log(f"Incremental push — entries changed since {last_pushed_at[:19].replace('T', ' ')} UTC")
         else:
             self._log("Full push — no previous push recorded, sending all entries")
 
@@ -120,6 +163,7 @@ class FiberyPushScreen(Screen):
                     f"{result.updated:,} updated, "
                     f"{result.skipped:,} skipped (running timers)."
                 )
+                self.run_worker(self._load_last_push_label(), exclusive=False)
             else:
                 self._log(
                     f"Push finished with errors: {result.error_message}  "
