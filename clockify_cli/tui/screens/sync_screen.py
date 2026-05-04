@@ -4,6 +4,7 @@ from typing import Optional
 
 from textual.app import ComposeResult
 from textual.binding import Binding
+from textual.dom import NoMatches
 from textual.reactive import reactive
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Header, Label, Log, ProgressBar, Static
@@ -33,6 +34,7 @@ class SyncScreen(Screen):
         Binding("escape", "dismiss", "Back"),
         Binding("s", "start_sync", "Start Sync"),
         Binding("i", "toggle_incremental", "Toggle Full/Incremental"),
+        Binding("r", "reset_and_full_sync", "Reset Local + Full Sync"),
     ]
 
     incremental: reactive[bool] = reactive(True)
@@ -47,6 +49,11 @@ class SyncScreen(Screen):
             with Static(id="sync-controls"):
                 yield Button("Start Sync [s]", id="btn-start", variant="primary")
                 yield Button("Mode: Incremental [i]", id="btn-toggle", variant="default")
+                yield Button(
+                    "Reset Local + Full Sync [r]",
+                    id="btn-reset-full",
+                    variant="warning",
+                )
                 yield Button("Back [Esc]", id="btn-back", variant="default")
 
             with Static(id="sync-entity-list"):
@@ -79,42 +86,77 @@ class SyncScreen(Screen):
             self.action_start_sync()
         elif event.button.id == "btn-toggle":
             self.action_toggle_incremental()
+        elif event.button.id == "btn-reset-full":
+            self.action_reset_and_full_sync()
         elif event.button.id == "btn-back":
-            self.action_dismiss()
+            # action_dismiss is async; run_worker executes it (Escape is awaited by Textual).
+            self.run_worker(self.action_dismiss(), exclusive=False)
 
     def action_start_sync(self) -> None:
+        self._start_sync(reset_local=False)
+
+    def action_reset_and_full_sync(self) -> None:
+        self._start_sync(reset_local=True)
+
+    def _start_sync(self, reset_local: bool) -> None:
         config = self.app.config  # type: ignore[attr-defined]
         if not config.is_configured():
             self._log("Not configured — go to Settings first.")
             return
-        self.run_worker(self._run_sync(), exclusive=True, name="sync-worker")
+        if reset_local:
+            self._log("Reset-local mode selected: local workspace rows will be deleted first.")
+        self.run_worker(
+            self._run_sync(reset_local=reset_local),
+            exclusive=True,
+            name="sync-worker",
+        )
 
     def action_toggle_incremental(self) -> None:
         self.incremental = not self.incremental
         self._update_mode_label()
+
+    async def action_dismiss(self, result=None):
+        if getattr(self, "_dismiss_in_progress", False):
+            return
+        self._dismiss_in_progress = True
+        from clockify_cli.tui.worker_utils import cancel_and_wait_running_workers
+
+        await cancel_and_wait_running_workers(self)
+        await super().action_dismiss(result)
 
     def _update_mode_label(self) -> None:
         mode = "Incremental" if self.incremental else "Full"
         self.query_one("#sync-mode-label", Label).update(f"Mode: {mode}")
         self.query_one("#btn-toggle", Button).label = f"Mode: {mode} [i]"
 
-    async def _run_sync(self) -> None:
+    def _set_sync_action_buttons_disabled(self, disabled: bool) -> None:
+        """Toggle Start / Reset-Full buttons; no-op if widgets are gone (e.g. screen dismissed)."""
+        for selector in ("#btn-start", "#btn-reset-full"):
+            try:
+                self.query_one(selector, Button).disabled = disabled
+            except NoMatches:
+                pass
+
+    async def _run_sync(self, reset_local: bool = False) -> None:
         from clockify_cli.api.client import ClockifyClient
         from clockify_cli.sync.orchestrator import SyncOrchestrator
 
         config = self.app.config  # type: ignore[attr-defined]
         db = self.app.db  # type: ignore[attr-defined]
 
-        mode = "incremental" if self.incremental else "full"
+        if reset_local:
+            mode = "reset-local + full"
+        else:
+            mode = "incremental" if self.incremental else "full"
         self._log(f"Starting {mode} sync...")
-        self.query_one("#btn-start", Button).disabled = True
+        self._set_sync_action_buttons_disabled(True)
 
         workspace_id = config.workspace_id
         if not workspace_id or not isinstance(workspace_id, str) or workspace_id.startswith("Select."):
             self._log(
                 "No workspace selected. Please go to Settings and save a workspace first."
             )
-            self.query_one("#btn-start", Button).disabled = False
+            self._set_sync_action_buttons_disabled(False)
             return
 
         try:
@@ -122,7 +164,8 @@ class SyncScreen(Screen):
                 orch = SyncOrchestrator(client, db)
                 await orch.sync_all(
                     workspace_id,
-                    incremental=self.incremental,
+                    incremental=False if reset_local else self.incremental,
+                    reset_local=reset_local,
                     on_progress=self._on_progress,
                 )
             from clockify_cli.config import save_config
@@ -132,7 +175,7 @@ class SyncScreen(Screen):
         except Exception as exc:
             self._log(f"Sync error: {exc}")
         finally:
-            self.query_one("#btn-start", Button).disabled = False
+            self._set_sync_action_buttons_disabled(False)
 
     async def _on_progress(self, progress: SyncProgress) -> None:
         """Called by orchestrator after every page — update widgets directly.

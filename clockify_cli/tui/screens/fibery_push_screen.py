@@ -3,6 +3,7 @@ from datetime import datetime
 
 from textual.app import ComposeResult
 from textual.binding import Binding
+from textual.dom import NoMatches
 from textual.screen import Screen
 from textual.widgets import Button, Footer, Header, Label, Log, ProgressBar, Static
 
@@ -15,6 +16,7 @@ class FiberyPushScreen(Screen):
     BINDINGS = [
         Binding("escape", "dismiss", "Back"),
         Binding("s", "start_push", "Start Push"),
+        Binding("r", "replace_all_push", "Replace All + Push"),
     ]
 
     DEFAULT_CSS = """
@@ -23,6 +25,8 @@ class FiberyPushScreen(Screen):
     #last-push-label.never-pushed { color: $warning; }
     """
 
+    _last_delete_log: int = 0
+
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with Static(id="sync-screen"):          # reuse sync-screen CSS
@@ -30,12 +34,17 @@ class FiberyPushScreen(Screen):
                 yield Label("Push to Fibery", id="sync-header-title")
                 yield Label("", id="last-push-label", classes="never-pushed")
                 yield Label(
-                    "Only entries changed since last push will be sent",
+                    "Default: incremental push. Optional: replace all Fibery rows and repush.",
                     id="sync-mode-label",
                 )
 
             with Static(id="sync-controls"):
                 yield Button("Start Push [s]", id="btn-start", variant="primary")
+                yield Button(
+                    "Replace All + Push [r]",
+                    id="btn-replace-all",
+                    variant="warning",
+                )
                 yield Button("Back [Esc]", id="btn-back", variant="default")
 
             with Static(id="sync-entity-list"):
@@ -63,24 +72,18 @@ class FiberyPushScreen(Screen):
         self.run_worker(self._load_last_push_label(), exclusive=False)
 
     async def _load_last_push_label(self) -> None:
-        """Query the DB for last push time and update the banner label."""
+        """Query Fibery Clockify Update Log for last push time."""
         try:
-            db = self.app.db  # type: ignore[attr-defined]
             config = self.app.config  # type: ignore[attr-defined]
-            workspace_id = config.workspace_id
-            if workspace_id and not str(workspace_id).startswith("Select."):
-                row = await db.fetchone(
-                    "SELECT last_pushed_at FROM fibery_push_log WHERE workspace_id = ?",
-                    (workspace_id,),
-                )
-            else:
-                rows = await db.fetchall("SELECT id FROM workspaces LIMIT 1", ())
-                workspace_id = rows[0]["id"] if rows else None
-                row = await db.fetchone(
-                    "SELECT last_pushed_at FROM fibery_push_log WHERE workspace_id = ?",
-                    (workspace_id,),
-                ) if workspace_id else None
-            self._update_last_push_label(row["last_pushed_at"] if row else None)
+            if not config.is_fibery_configured():
+                self._update_last_push_label(None)
+                return
+            from clockify_cli.fibery.client import FiberyClient
+            async with FiberyClient(
+                config.get_fibery_api_key(), config.fibery_workspace
+            ) as client:
+                last_pushed_at = await client.get_last_clockify_update_run_at()
+            self._update_last_push_label(last_pushed_at)
         except Exception:
             pass
 
@@ -100,10 +103,27 @@ class FiberyPushScreen(Screen):
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-start":
             self.action_start_push()
+        elif event.button.id == "btn-replace-all":
+            self.action_replace_all_push()
         elif event.button.id == "btn-back":
-            self.action_dismiss()
+            self.run_worker(self.action_dismiss(), exclusive=False)
+
+    async def action_dismiss(self, result=None):
+        if getattr(self, "_dismiss_in_progress", False):
+            return
+        self._dismiss_in_progress = True
+        from clockify_cli.tui.worker_utils import cancel_and_wait_running_workers
+
+        await cancel_and_wait_running_workers(self)
+        await super().action_dismiss(result)
 
     def action_start_push(self) -> None:
+        self._start_push(replace_all=False)
+
+    def action_replace_all_push(self) -> None:
+        self._start_push(replace_all=True)
+
+    def _start_push(self, replace_all: bool) -> None:
         config = self.app.config  # type: ignore[attr-defined]
         if not config.is_configured():
             self._log("Not configured — set Clockify API key in Settings first.")
@@ -111,16 +131,30 @@ class FiberyPushScreen(Screen):
         if not config.is_fibery_configured():
             self._log("No Fibery API key — add it in Settings first.")
             return
-        self.run_worker(self._run_push(), exclusive=True, name="fibery-push-worker")
+        if replace_all:
+            self._log("Replace-all mode selected: existing Fibery Labor Costs will be deleted.")
+        self.run_worker(
+            self._run_push(replace_all=replace_all),
+            exclusive=True,
+            name="fibery-push-worker",
+        )
 
-    async def _run_push(self) -> None:
+    def _set_push_action_buttons_disabled(self, disabled: bool) -> None:
+        for selector in ("#btn-start", "#btn-replace-all"):
+            try:
+                self.query_one(selector, Button).disabled = disabled
+            except NoMatches:
+                pass
+
+    async def _run_push(self, replace_all: bool = False) -> None:
         from clockify_cli.fibery.client import FiberyClient
         from clockify_cli.fibery.push_orchestrator import FiberyPushOrchestrator
 
         config = self.app.config  # type: ignore[attr-defined]
         db = self.app.db          # type: ignore[attr-defined]
+        self._last_delete_log = 0
 
-        self.query_one("#btn-start", Button).disabled = True
+        self._set_push_action_buttons_disabled(True)
 
         # Resolve a valid workspace ID — config may hold a sentinel string
         # ("Select.NULL") if Settings was saved without re-fetching workspaces.
@@ -131,29 +165,35 @@ class FiberyPushScreen(Screen):
                 self._log(
                     "No workspace found. Please sync first, then re-save Settings."
                 )
-                self.query_one("#btn-start", Button).disabled = False
+                self._set_push_action_buttons_disabled(False)
                 return
             workspace_id = rows[0]["id"]
             self._log(f"Note: resolved workspace from DB ({workspace_id[:8]}…)")
-
-        # Log whether this will be a full or incremental push
-        log_row = await db.fetchone(
-            "SELECT last_pushed_at FROM fibery_push_log WHERE workspace_id = ?",
-            (workspace_id,),
-        )
-        last_pushed_at = log_row["last_pushed_at"] if log_row else None
-        if last_pushed_at:
-            self._log(f"Incremental push — entries changed since {last_pushed_at[:19].replace('T', ' ')} UTC")
-        else:
-            self._log("Full push — no previous push recorded, sending all entries")
 
         try:
             async with FiberyClient(
                 config.get_fibery_api_key(), config.fibery_workspace
             ) as client:
+                if replace_all:
+                    self._log("Replace-all push — deleting all Fibery Labor Cost rows first")
+                else:
+                    self._log("Incremental push — reading checkpoint from Fibery Clockify Update Log")
+                    checkpoint = await client.get_last_clockify_update_run_at()
+                    if checkpoint:
+                        self._log(
+                            "Incremental push — entries changed on/after "
+                            f"{checkpoint[:19].replace('T', ' ')} UTC"
+                        )
+                    else:
+                        self._log(
+                            "Incremental push blocked: Clockify Update Log is empty. "
+                            "Recommendation: run a full data refresh "
+                            "(Replace All + Push) first."
+                        )
                 orch = FiberyPushOrchestrator(client, db)
                 result = await orch.push_all(
                     workspace_id,
+                    replace_all=replace_all,
                     on_progress=self._on_progress,
                 )
 
@@ -173,7 +213,7 @@ class FiberyPushScreen(Screen):
         except Exception as exc:
             self._log(f"Push error: {exc}")
         finally:
-            self.query_one("#btn-start", Button).disabled = False
+            self._set_push_action_buttons_disabled(False)
 
     async def _on_progress(self, progress: PushProgress) -> None:
         """Update widgets directly — same pattern as SyncScreen."""
@@ -181,6 +221,7 @@ class FiberyPushScreen(Screen):
             pb = self.query_one("#pb-labor-costs", ProgressBar)
             count_label = self.query_one("#count-labor-costs", Label)
             status_label = self.query_one("#status-labor-costs", Label)
+            is_deleting = progress.phase == "deleting"
 
             if progress.percent > 0:
                 pb.update(progress=progress.percent)
@@ -196,13 +237,24 @@ class FiberyPushScreen(Screen):
                 "done": "done",
                 "error": "error",
             }.get(progress.status, progress.status)
+            if is_deleting and progress.status == "running":
+                status_text = "deleting"
             status_label.update(status_text)
 
             for cls in ("status-pending", "status-running", "status-done", "status-error"):
                 status_label.remove_class(cls)
             status_label.add_class(f"status-{progress.status}")
 
-            if progress.status == "running" and progress.pushed > 0:
+            if is_deleting and progress.status == "running":
+                if (
+                    progress.pushed == progress.total
+                    or progress.pushed - self._last_delete_log >= 250
+                ):
+                    self._log(
+                        f"Deleting Fibery Labor Costs: {progress.pushed:,}/{progress.total:,}"
+                    )
+                    self._last_delete_log = progress.pushed
+            elif progress.status == "running" and progress.pushed > 0:
                 self._log(f"Pushed {progress.pushed:,} / {progress.total:,} entries...")
 
             if progress.status in ("done", "error") and progress.errors:
