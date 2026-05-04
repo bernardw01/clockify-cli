@@ -72,6 +72,10 @@ CREATE TABLE IF NOT EXISTS time_entries (
     is_locked       INTEGER NOT NULL DEFAULT 0,
     task_id         TEXT,
     tag_ids         TEXT,
+    approval_status TEXT NOT NULL DEFAULT 'NOT_SUBMITTED',
+    approver_id     TEXT,
+    approver_name   TEXT,
+    approved_at     TEXT,
     fetched_at      TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (workspace_id) REFERENCES workspaces(id),
     FOREIGN KEY (user_id) REFERENCES users(id),
@@ -123,4 +127,4 @@ ALL_DDL: list[str] = [
     FIBERY_PUSH_LOG_DDL,
 ]
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 4

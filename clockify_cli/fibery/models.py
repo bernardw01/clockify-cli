@@ -27,6 +27,7 @@ class LaborCostPayload:
     task_id: Optional[str]                    # → Task ID
     project_id: Optional[str]                 # → Project ID
     billable: str                             # → Billable  "Yes" | "No"
+    approval_status: str                      # → Time Entry Status
     user_id_text: Optional[str]               # → User ID  (email)
     user_name: Optional[str]                  # → Time Entry User Name
     project_name: Optional[str]               # → Time Entry Project Name
@@ -53,6 +54,7 @@ class LaborCostPayload:
             "Agreement Management/Task ID": self.task_id,
             "Agreement Management/Project ID": self.project_id,
             "Agreement Management/Billable": self.billable,
+            "Agreement Management/Time Entry Status": self.approval_status,
             "Agreement Management/User ID": self.user_id_text,
             "Agreement Management/Time Entry User Name": self.user_name,
             "Agreement Management/Time Entry Project Name": self.project_name,
@@ -70,6 +72,7 @@ class PushProgress:
     skipped: int = 0            # running-timer entries skipped in this run
     errors: int = 0             # entries that failed
     status: str = "pending"     # pending | running | done | error
+    phase: str = "pushing"      # deleting | pushing
     error_message: Optional[str] = None
     is_incremental: bool = False  # True when filtered to records changed since last push
     last_pushed_at: Optional[str] = None  # ISO datetime of previous push (None = first push)
@@ -83,3 +86,19 @@ class PushProgress:
     @property
     def is_done(self) -> bool:
         return self.status in ("done", "error")
+
+
+@dataclass
+class ClockifyUpdateLogResult:
+    """Summary values written into Fibery Clockify Update Log."""
+
+    workspace_id: str
+    started_at: str
+    completed_at: str
+    status: str
+    total: int
+    pushed: int
+    created: int
+    updated: int
+    skipped: int
+    errors: int

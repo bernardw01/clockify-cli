@@ -22,6 +22,7 @@ def _make_row(
     task_id: str | None = None,
     project_id: str | None = "proj-1",
     billable: int = 1,
+    approval_status: str = "PENDING",
     user_id: str = "user-1",
     user_name: str = "Alice",
     user_email: str = "alice@example.com",
@@ -37,6 +38,7 @@ def _make_row(
         "task_id": task_id,
         "project_id": project_id,
         "billable": billable,
+        "approval_status": approval_status,
         "user_id": user_id,
         "user_name": user_name,
         "user_email": user_email,
@@ -50,6 +52,12 @@ def _make_mock_client(
     upsert_count: int = 1,
 ) -> MagicMock:
     client = MagicMock()
+    client.get_last_clockify_update_run_at = AsyncMock(
+        return_value="2025-12-01T11:00:00Z"
+    )
+    client.append_clockify_update_log = AsyncMock(return_value=None)
+    client.get_labor_cost_entity_ids = AsyncMock(return_value=[])
+    client.delete_labor_cost_entities = AsyncMock(return_value=0)
     client.get_existing_time_log_ids = AsyncMock(return_value=existing_ids or set())
     client.batch_upsert_labor_costs = AsyncMock(return_value=upsert_count)
     return client
@@ -71,6 +79,12 @@ def test_build_payload_billable_false():
     row = _make_row(billable=0)
     payload = _build_payload(row)
     assert payload.billable == "No"
+
+
+def test_build_payload_maps_approval_status():
+    row = _make_row(approval_status="APPROVED")
+    payload = _build_payload(row)
+    assert payload.approval_status == "APPROVED"
 
 
 def test_build_payload_maps_user_fields():
@@ -117,8 +131,8 @@ async def _seed_db(db: Database, rows: list[dict]) -> None:
         await db.execute(
             """INSERT OR IGNORE INTO time_entries
                (id, workspace_id, user_id, project_id, description,
-                start_time, end_time, duration, billable, is_locked, fetched_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                start_time, end_time, duration, billable, is_locked, approval_status, fetched_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 r["id"], WS_ID, uid, pid,
                 r.get("description"),
@@ -127,18 +141,10 @@ async def _seed_db(db: Database, rows: list[dict]) -> None:
                 r.get("duration", 3600),
                 r.get("billable", 1),
                 0,
+                r.get("approval_status", "PENDING"),
                 r.get("fetched_at", "2025-12-01T11:00:00Z"),
             ),
         )
-
-
-async def _set_last_pushed_at(db: Database, ts: str) -> None:
-    """Seed the fibery_push_log so the orchestrator runs in incremental mode."""
-    await db.execute(
-        "INSERT INTO fibery_push_log(workspace_id, last_pushed_at) VALUES (?, ?)"
-        " ON CONFLICT(workspace_id) DO UPDATE SET last_pushed_at = excluded.last_pushed_at",
-        (WS_ID, ts),
-    )
 
 
 # ── FiberyPushOrchestrator.push_all — full push ───────────────────────────────
@@ -158,8 +164,9 @@ async def test_push_all_pushes_complete_entries(tmp_path: Path):
     assert progress.errors == 0
     assert progress.created == 1
     assert progress.updated == 0
-    assert progress.is_incremental is False   # no log row → full push
+    assert progress.is_incremental is True
     client.batch_upsert_labor_costs.assert_called_once()
+    client.append_clockify_update_log.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -211,15 +218,29 @@ async def test_push_all_no_entries_returns_done(tmp_path: Path):
 # ── incremental push behaviour ────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_push_all_incremental_filters_old_entries(tmp_path: Path):
-    """Entries fetched before last_pushed_at should be excluded."""
+async def test_push_all_filters_out_not_submitted_entries(tmp_path: Path):
     db = Database(tmp_path / "test.db")
     async with db:
-        # Entry fetched at 10:00, last push was 11:00 → should be skipped
-        await _seed_db(db, [_make_row(id="te-old", fetched_at="2025-12-01T10:00:00Z")])
-        await _set_last_pushed_at(db, "2025-12-01T11:00:00Z")
-
+        await _seed_db(db, [_make_row(id="te-ns", approval_status="NOT_SUBMITTED")])
         client = _make_mock_client()
+        orch = FiberyPushOrchestrator(client, db)
+        progress = await orch.push_all(WS_ID)
+
+    assert progress.status == "done"
+    assert progress.total == 0
+    client.batch_upsert_labor_costs.assert_not_called()
+
+@pytest.mark.asyncio
+async def test_push_all_incremental_filters_old_entries(tmp_path: Path):
+    """Entries fetched before checkpoint should be excluded."""
+    db = Database(tmp_path / "test.db")
+    async with db:
+        # Entry fetched at 10:00, checkpoint was 11:00 → should be skipped
+        await _seed_db(db, [_make_row(id="te-old", fetched_at="2025-12-01T10:00:00Z")])
+        client = _make_mock_client()
+        client.get_last_clockify_update_run_at = AsyncMock(
+            return_value="2025-12-01T11:00:00Z"
+        )
         orch = FiberyPushOrchestrator(client, db)
         progress = await orch.push_all(WS_ID)
 
@@ -231,14 +252,15 @@ async def test_push_all_incremental_filters_old_entries(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_push_all_incremental_includes_new_entries(tmp_path: Path):
-    """Entries fetched after last_pushed_at should be included."""
+    """Entries fetched at/after checkpoint should be included."""
     db = Database(tmp_path / "test.db")
     async with db:
-        # Entry fetched at 12:00, last push was 11:00 → should be included
+        # Entry fetched at 12:00, checkpoint was 11:00 → should be included
         await _seed_db(db, [_make_row(id="te-new", fetched_at="2025-12-01T12:00:00Z")])
-        await _set_last_pushed_at(db, "2025-12-01T11:00:00Z")
-
         client = _make_mock_client(upsert_count=1)
+        client.get_last_clockify_update_run_at = AsyncMock(
+            return_value="2025-12-01T11:00:00Z"
+        )
         orch = FiberyPushOrchestrator(client, db)
         progress = await orch.push_all(WS_ID)
 
@@ -249,26 +271,58 @@ async def test_push_all_incremental_includes_new_entries(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_push_all_saves_push_log_on_success(tmp_path: Path):
-    """fibery_push_log must be updated after a clean push."""
+async def test_push_all_incremental_includes_entries_equal_to_checkpoint(tmp_path: Path):
+    db = Database(tmp_path / "test.db")
+    async with db:
+        await _seed_db(db, [_make_row(id="te-eq", fetched_at="2025-12-01T11:00:00Z")])
+        client = _make_mock_client(upsert_count=1)
+        client.get_last_clockify_update_run_at = AsyncMock(
+            return_value="2025-12-01T11:00:00Z"
+        )
+        orch = FiberyPushOrchestrator(client, db)
+        progress = await orch.push_all(WS_ID)
+
+    assert progress.status == "done"
+    assert progress.total == 1
+    client.batch_upsert_labor_costs.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_push_all_replace_all_ignores_incremental_cursor(tmp_path: Path):
+    """Replace-all mode should delete Fibery rows and then perform a full push."""
+    db = Database(tmp_path / "test.db")
+    async with db:
+        await _seed_db(db, [_make_row(id="te-old", fetched_at="2025-12-01T10:00:00Z")])
+        client = _make_mock_client(upsert_count=1)
+        client.get_labor_cost_entity_ids = AsyncMock(
+            return_value=["11111111-1111-1111-1111-111111111111"]
+        )
+        client.delete_labor_cost_entities = AsyncMock(return_value=1)
+        orch = FiberyPushOrchestrator(client, db)
+        progress = await orch.push_all(WS_ID, replace_all=True)
+
+    assert progress.status == "done"
+    assert progress.is_incremental is False
+    assert progress.total == 1
+    client.delete_labor_cost_entities.assert_called_once()
+    client.batch_upsert_labor_costs.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_push_all_appends_update_log_on_success(tmp_path: Path):
+    """Fibery Clockify Update Log must be written after a clean push."""
     db = Database(tmp_path / "test.db")
     async with db:
         await _seed_db(db, [_make_row()])
         client = _make_mock_client(upsert_count=1)
         orch = FiberyPushOrchestrator(client, db)
         await orch.push_all(WS_ID)
-
-        row = await db.fetchone(
-            "SELECT last_pushed_at FROM fibery_push_log WHERE workspace_id = ?",
-            (WS_ID,),
-        )
-    assert row is not None
-    assert row["last_pushed_at"] is not None
+    client.append_clockify_update_log.assert_called_once()
 
 
 @pytest.mark.asyncio
-async def test_push_all_does_not_save_push_log_on_error(tmp_path: Path):
-    """fibery_push_log must NOT be updated when the push fails."""
+async def test_push_all_appends_update_log_on_error(tmp_path: Path):
+    """Fibery Clockify Update Log must still be written on failed push."""
     db = Database(tmp_path / "test.db")
     async with db:
         await _seed_db(db, [_make_row()])
@@ -276,14 +330,8 @@ async def test_push_all_does_not_save_push_log_on_error(tmp_path: Path):
         client.batch_upsert_labor_costs = AsyncMock(side_effect=Exception("API down"))
         orch = FiberyPushOrchestrator(client, db)
         progress = await orch.push_all(WS_ID)
-
-        row = await db.fetchone(
-            "SELECT last_pushed_at FROM fibery_push_log WHERE workspace_id = ?",
-            (WS_ID,),
-        )
     assert progress.status == "error"
-    # Log row should not exist (or last_pushed_at should be None) after failure
-    assert row is None or row["last_pushed_at"] is None
+    client.append_clockify_update_log.assert_called_once()
 
 
 # ── error paths ───────────────────────────────────────────────────────────────
@@ -293,6 +341,9 @@ async def test_push_all_preflight_failure_returns_error(tmp_path: Path):
     db = Database(tmp_path / "test.db")
     async with db:
         client = MagicMock()
+        client.get_last_clockify_update_run_at = AsyncMock(
+            return_value="2025-12-01T11:00:00Z"
+        )
         client.get_existing_time_log_ids = AsyncMock(side_effect=Exception("network error"))
         orch = FiberyPushOrchestrator(client, db)
         progress = await orch.push_all(WS_ID)
@@ -313,6 +364,71 @@ async def test_push_all_batch_error_recorded_in_progress(tmp_path: Path):
 
     assert progress.errors == 1
     assert progress.status == "error"
+
+
+@pytest.mark.asyncio
+async def test_push_all_last_update_query_failure_returns_error(tmp_path: Path):
+    db = Database(tmp_path / "test.db")
+    async with db:
+        client = _make_mock_client()
+        client.get_last_clockify_update_run_at = AsyncMock(side_effect=Exception("api down"))
+        orch = FiberyPushOrchestrator(client, db)
+        progress = await orch.push_all(WS_ID)
+
+    assert progress.status == "error"
+    assert "Clockify Update Log query failed" in (progress.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_push_all_empty_update_log_blocks_incremental_with_recommendation(tmp_path: Path):
+    db = Database(tmp_path / "test.db")
+    async with db:
+        await _seed_db(db, [_make_row()])
+        client = _make_mock_client()
+        client.get_last_clockify_update_run_at = AsyncMock(return_value=None)
+        orch = FiberyPushOrchestrator(client, db)
+        progress = await orch.push_all(WS_ID)
+
+    assert progress.status == "error"
+    assert "Clockify Update Log is empty" in (progress.error_message or "")
+    assert "full data refresh" in (progress.error_message or "")
+    client.batch_upsert_labor_costs.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_push_all_replace_all_delete_failure_returns_error(tmp_path: Path):
+    db = Database(tmp_path / "test.db")
+    async with db:
+        await _seed_db(db, [_make_row()])
+        client = _make_mock_client()
+        client.get_labor_cost_entity_ids = AsyncMock(return_value=["id-1"])
+        client.delete_labor_cost_entities = AsyncMock(side_effect=Exception("delete failed"))
+        orch = FiberyPushOrchestrator(client, db)
+        progress = await orch.push_all(WS_ID, replace_all=True)
+
+    assert progress.status == "error"
+    assert "Replace-all delete failed" in (progress.error_message or "")
+
+
+@pytest.mark.asyncio
+async def test_push_all_replace_all_reports_delete_phase_progress(tmp_path: Path):
+    db = Database(tmp_path / "test.db")
+    snapshots: list[tuple[str, int, int]] = []
+
+    async def on_progress(p: PushProgress) -> None:
+        snapshots.append((p.phase, p.pushed, p.total))
+
+    async with db:
+        await _seed_db(db, [_make_row()])
+        client = _make_mock_client(upsert_count=1)
+        client.get_labor_cost_entity_ids = AsyncMock(
+            return_value=["id-1", "id-2", "id-3"]
+        )
+        client.delete_labor_cost_entities = AsyncMock(return_value=3)
+        orch = FiberyPushOrchestrator(client, db)
+        await orch.push_all(WS_ID, replace_all=True, on_progress=on_progress)
+
+    assert ("deleting", 0, 3) in snapshots
 
 
 @pytest.mark.asyncio

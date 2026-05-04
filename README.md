@@ -15,7 +15,7 @@ A local-first terminal tool that mirrors your [Clockify](https://clockify.me) wo
 | **Local SQLite store** | All data is written to `~/.local/share/clockify-cli/clockify.db` — queryable with any SQL tool |
 | **Live TUI progress** | Per-entity progress bars, record counters, and status chips update in real time during sync |
 | **Time entry browser** | Searchable table of entries with project, description, duration, and billable flag |
-| **Push to Fibery** | Pushes synced time entries into `Agreement Management/Labor Costs` in Fibery — incremental by default (only entries updated since the last push), full on first run |
+| **Push to Fibery** | Pushes synced time entries into `Agreement Management/Labor Costs` in Fibery — incremental mode uses Fibery `Clockify Update Log` as the checkpoint |
 | **Structured logging** | Every API request and response is logged to `~/.local/share/clockify-cli/logs/` |
 
 ---
@@ -120,7 +120,7 @@ Pushes completed time entries from the local database into Fibery's
 | **Start Push `[s]`** | Begin the push (pre-flight → batch upsert) |
 | **Escape** | Return to Main Menu |
 
-**Incremental by default** — on the first run all entries are pushed; on subsequent runs only entries whose Clockify data was re-synced after the previous push are sent.  The push cursor advances only when the run completes without errors, so a failed run is fully retried next time.
+**Incremental by default** — on each run the tool reads Fibery `Clockify Update Log` and uses the latest run timestamp as the checkpoint. It then pushes only local rows with `fetched_at >= checkpoint` (or all rows if no checkpoint exists), and writes the run summary back to `Clockify Update Log`.
 
 The completion message reports exactly how many entries were **new** (created in Fibery), **updated** (already existed), and **skipped** (running timers with no end time).
 
@@ -168,7 +168,7 @@ workspaces
     └── users            (FK → workspaces)
     └── time_entries     (FK → workspaces, users, projects)
     └── sync_log         last sync status per entity type
-    └── fibery_push_log  last successful Fibery push timestamp per workspace
+    └── fibery_push_log  legacy local push log (incremental checkpoint now comes from Fibery)
 ```
 
 The database lives at `~/.local/share/clockify-cli/clockify.db` and can be queried directly:

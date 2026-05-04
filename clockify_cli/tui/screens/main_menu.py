@@ -60,24 +60,20 @@ class MainMenuScreen(Screen):
 
     async def _refresh_fibery_push_label(self) -> None:
         try:
-            db = self.app.db  # type: ignore[attr-defined]
             config = self.app.config  # type: ignore[attr-defined]
-            workspace_id = config.workspace_id
-            if not workspace_id or str(workspace_id).startswith("Select."):
-                rows = await db.fetchall("SELECT id FROM workspaces LIMIT 1", ())
-                workspace_id = rows[0]["id"] if rows else None
-            if workspace_id:
-                row = await db.fetchone(
-                    "SELECT last_pushed_at FROM fibery_push_log WHERE workspace_id = ?",
-                    (workspace_id,),
-                )
-                last_pushed_at = row["last_pushed_at"] if row else None
-            else:
-                last_pushed_at = None
+            last_pushed_at = None
+            if config.is_fibery_configured():
+                from clockify_cli.fibery.client import FiberyClient
+
+                async with FiberyClient(
+                    config.get_fibery_api_key(),
+                    config.fibery_workspace,
+                ) as client:
+                    last_pushed_at = await client.get_last_clockify_update_run_at()
             lbl = self.query_one("#fibery-push-status", Label)
             if last_pushed_at:
                 ts = last_pushed_at[:19].replace("T", " ")
-                lbl.update(f"Last Fibery push: {ts} UTC")
+                lbl.update(f"Last Fibery update log: {ts} UTC")
             else:
                 lbl.update("[dim]Never pushed to Fibery[/dim]")
         except Exception:

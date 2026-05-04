@@ -155,3 +155,25 @@ class TimeEntry(BaseModel):
                 "duration": self.time_interval.duration,
             },
         }
+
+
+class ApprovalRequestStatus(BaseModel):
+    state: str
+    updated_by: Optional[str] = Field(None, alias="updatedBy")
+    updated_by_user_name: Optional[str] = Field(None, alias="updatedByUserName")
+    updated_at: Optional[str] = Field(None, alias="updatedAt")
+
+
+class ApprovalRequestBody(BaseModel):
+    status: ApprovalRequestStatus
+
+
+class ApprovalRequestEntry(BaseModel):
+    id: str
+
+
+class ApprovalRequestItem(BaseModel):
+    approval_request: ApprovalRequestBody = Field(alias="approvalRequest")
+    entries: list[ApprovalRequestEntry] = Field(default_factory=list)
+
+    model_config = {"populate_by_name": True}

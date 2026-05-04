@@ -22,8 +22,8 @@ class TimeEntryRepository:
             INSERT INTO time_entries
                 (id, workspace_id, user_id, project_id, description,
                  start_time, end_time, duration, billable, is_locked,
-                 task_id, tag_ids)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 task_id, tag_ids, approval_status, approver_id, approver_name, approved_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 workspace_id = excluded.workspace_id,
                 user_id      = excluded.user_id,
@@ -36,6 +36,10 @@ class TimeEntryRepository:
                 is_locked    = excluded.is_locked,
                 task_id      = excluded.task_id,
                 tag_ids      = excluded.tag_ids,
+                approval_status = excluded.approval_status,
+                approver_id = excluded.approver_id,
+                approver_name = excluded.approver_name,
+                approved_at = excluded.approved_at,
                 fetched_at   = CASE
                     WHEN time_entries.project_id   IS NOT excluded.project_id
                       OR time_entries.description  IS NOT excluded.description
@@ -72,6 +76,10 @@ class TimeEntryRepository:
                 int(e.get("isLocked") or e.get("is_locked", False)),
                 e.get("taskId") or e.get("task_id"),
                 json.dumps(tag_ids) if tag_ids else None,
+                e.get("approvalStatus") or e.get("approval_status") or "NOT_SUBMITTED",
+                e.get("approverId") or e.get("approver_id"),
+                e.get("approverName") or e.get("approver_name"),
+                e.get("approvedAt") or e.get("approved_at"),
             ))
         await self._db.executemany(sql, rows)
         return len(rows)
@@ -128,6 +136,7 @@ class TimeEntryRepository:
             SELECT
                 te.id, te.start_time, te.end_time, te.duration,
                 te.description, te.billable, te.is_locked,
+                te.approver_id, te.approver_name, te.approved_at,
                 u.name AS user_name,
                 p.name AS project_name,
                 p.color AS project_color
@@ -147,6 +156,116 @@ class TimeEntryRepository:
             (workspace_id,),
         )
         return row["n"] if row else 0
+
+    async def get_by_id(self, workspace_id: str, entry_id: str) -> dict | None:
+        """Return one time entry with joined user/project fields."""
+        return await self._db.fetchone(
+            """
+            SELECT
+                te.id,
+                te.workspace_id,
+                te.user_id,
+                te.project_id,
+                te.description,
+                te.start_time,
+                te.end_time,
+                te.duration,
+                te.billable,
+                te.is_locked,
+                te.task_id,
+                te.approval_status,
+                te.approver_id,
+                te.approver_name,
+                te.approved_at,
+                te.fetched_at,
+                u.name AS user_name,
+                u.email AS user_email,
+                p.name AS project_name
+            FROM time_entries te
+            LEFT JOIN users u ON te.user_id = u.id
+            LEFT JOIN projects p ON te.project_id = p.id
+            WHERE te.workspace_id = ? AND te.id = ?
+            LIMIT 1
+            """,
+            (workspace_id, entry_id),
+        )
+
+    async def get_approval_status_counts(self, workspace_id: str) -> dict[str, int]:
+        """Return counts by approval_status for one workspace."""
+        rows = await self._db.fetchall(
+            "SELECT approval_status, COUNT(*) AS n "
+            "FROM time_entries WHERE workspace_id = ? "
+            "GROUP BY approval_status",
+            (workspace_id,),
+        )
+        counts = {"NOT_SUBMITTED": 0, "PENDING": 0, "APPROVED": 0}
+        for row in rows:
+            status = row.get("approval_status")
+            if status:
+                counts[status] = int(row.get("n") or 0)
+        return counts
+
+    async def reset_approval_status(self, workspace_id: str) -> int:
+        """Set all workspace entries to NOT_SUBMITTED before enrichment."""
+        cursor = await self._db.execute(
+            "UPDATE time_entries "
+            "SET approval_status = 'NOT_SUBMITTED', "
+            "approver_id = NULL, approver_name = NULL, approved_at = NULL "
+            "WHERE workspace_id = ?",
+            (workspace_id,),
+        )
+        return int(cursor.rowcount or 0)
+
+    async def set_approval_status_for_ids(
+        self,
+        workspace_id: str,
+        entry_ids: set[str],
+        approval_status: str,
+    ) -> int:
+        """Apply one approval status to a set of entry IDs."""
+        if not entry_ids:
+            return 0
+
+        updated = 0
+        ids = list(entry_ids)
+        chunk_size = 900
+        for i in range(0, len(ids), chunk_size):
+            chunk = ids[i:i + chunk_size]
+            placeholders = ",".join("?" for _ in chunk)
+            sql = (
+                "UPDATE time_entries "
+                f"SET approval_status = ? WHERE workspace_id = ? AND id IN ({placeholders})"
+            )
+            params = (approval_status, workspace_id, *chunk)
+            cursor = await self._db.execute(sql, params)
+            updated += int(cursor.rowcount or 0)
+        return updated
+
+    async def apply_approval_details(
+        self,
+        workspace_id: str,
+        details_by_entry_id: dict[str, dict[str, Optional[str]]],
+    ) -> int:
+        """Apply status + approver metadata for specific entries."""
+        if not details_by_entry_id:
+            return 0
+        sql = (
+            "UPDATE time_entries SET "
+            "approval_status = ?, approver_id = ?, approver_name = ?, approved_at = ? "
+            "WHERE workspace_id = ? AND id = ?"
+        )
+        params: list[tuple] = []
+        for entry_id, details in details_by_entry_id.items():
+            params.append((
+                details.get("status") or "NOT_SUBMITTED",
+                details.get("approver_id"),
+                details.get("approver_name"),
+                details.get("approved_at"),
+                workspace_id,
+                entry_id,
+            ))
+        await self._db.executemany(sql, params)
+        return len(params)
 
 
 def _parse_duration(iso_duration: str) -> Optional[int]:

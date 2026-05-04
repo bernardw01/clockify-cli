@@ -6,7 +6,6 @@ from typing import Awaitable, Callable, Optional
 from loguru import logger
 
 from clockify_cli.api.client import ClockifyClient
-from clockify_cli.api.exceptions import ClockifyAPIError
 from clockify_cli.db.database import Database
 from clockify_cli.db.repositories.clients import ClientRepository
 from clockify_cli.db.repositories.projects import ProjectRepository
@@ -36,6 +35,7 @@ class SyncOrchestrator:
         self,
         workspace_id: str,
         incremental: bool = True,
+        reset_local: bool = False,
         on_progress: Optional[ProgressCallback] = None,
     ) -> SyncProgress:
         """Run a full sync: clients → projects → users → time_entries.
@@ -48,6 +48,9 @@ class SyncOrchestrator:
         Returns:
             Completed SyncProgress with final counts and any errors.
         """
+        if reset_local:
+            incremental = False
+
         progress = SyncProgress(workspace_id=workspace_id, incremental=incremental)
 
         async def _notify() -> None:
@@ -58,6 +61,10 @@ class SyncOrchestrator:
             f"Starting {'incremental' if incremental else 'full'} sync "
             f"for workspace {workspace_id}"
         )
+
+        if reset_local:
+            logger.info(f"Reset-local requested for workspace {workspace_id}; clearing local rows")
+            await self._clear_workspace_local_data(workspace_id)
 
         # 0. Ensure the workspace row exists before any FK-dependent inserts
         await self._ensure_workspace(workspace_id)
@@ -85,6 +92,9 @@ class SyncOrchestrator:
             progress, "time_entries", _notify,
             self._sync_time_entries(workspace_id, incremental, progress, _notify),
         )
+
+        if progress.entities["time_entries"].status == "done":
+            await self._enrich_time_entry_approval_status(workspace_id)
 
         progress.completed_at = datetime.now(timezone.utc).isoformat()
         await _notify()
@@ -252,3 +262,43 @@ class SyncOrchestrator:
             total_fetched, total_upserted, last_entry_time
         )
         logger.info(f"Synced {total_upserted} time entries ({total_fetched} fetched)")
+
+    async def _enrich_time_entry_approval_status(self, workspace_id: str) -> None:
+        """Enrich local time entries with Clockify approval status."""
+        try:
+            pending_details = await self._client.get_approval_entry_details(
+                workspace_id, "PENDING"
+            )
+            approved_details = await self._client.get_approval_entry_details(
+                workspace_id, "APPROVED"
+            )
+        except Exception as exc:
+            logger.warning(f"Approval enrichment skipped due to API error: {exc}")
+            return
+
+        await self._entries.reset_approval_status(workspace_id)
+        pending_only = {
+            entry_id: details
+            for entry_id, details in pending_details.items()
+            if entry_id not in approved_details
+        }
+        pending_updated = await self._entries.apply_approval_details(
+            workspace_id, pending_only
+        )
+        approved_updated = await self._entries.apply_approval_details(
+            workspace_id, approved_details
+        )
+        logger.info(
+            "Approval enrichment complete: "
+            f"{approved_updated} approved, {pending_updated} pending, "
+            "remaining entries not submitted"
+        )
+
+    async def _clear_workspace_local_data(self, workspace_id: str) -> None:
+        """Delete all local rows for one workspace before a clean full sync."""
+        # Child-first delete order to satisfy foreign-key constraints.
+        await self._db.execute("DELETE FROM time_entries WHERE workspace_id = ?", (workspace_id,))
+        await self._db.execute("DELETE FROM projects WHERE workspace_id = ?", (workspace_id,))
+        await self._db.execute("DELETE FROM users WHERE workspace_id = ?", (workspace_id,))
+        await self._db.execute("DELETE FROM clients WHERE workspace_id = ?", (workspace_id,))
+        await self._db.execute("DELETE FROM sync_log WHERE workspace_id = ?", (workspace_id,))

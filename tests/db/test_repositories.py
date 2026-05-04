@@ -185,6 +185,72 @@ async def test_time_entry_search_by_description(db_with_user_project: Database):
     assert len(empty) == 0
 
 
+async def test_time_entry_get_by_id_returns_joined_row(db_with_user_project: Database):
+    repo = TimeEntryRepository(db_with_user_project)
+    await repo.upsert_many([SAMPLE_ENTRY], WS_ID)
+
+    row = await repo.get_by_id(WS_ID, "te-1")
+    assert row is not None
+    assert row["id"] == "te-1"
+    assert row["user_name"] == "Alice"
+    assert row["project_name"] == "Test Project"
+
+    missing = await repo.get_by_id(WS_ID, "te-missing")
+    assert missing is None
+
+
+async def test_time_entry_approval_status_counts(db_with_user_project: Database):
+    repo = TimeEntryRepository(db_with_user_project)
+    entries = [
+        {
+            **SAMPLE_ENTRY,
+            "id": "te-pending",
+            "approvalStatus": "PENDING",
+            "timeInterval": {"start": "2024-03-01T09:00:00Z", "end": "2024-03-01T10:00:00Z"},
+        },
+        {
+            **SAMPLE_ENTRY,
+            "id": "te-approved",
+            "approvalStatus": "APPROVED",
+            "timeInterval": {"start": "2024-03-02T09:00:00Z", "end": "2024-03-02T10:00:00Z"},
+        },
+        {
+            **SAMPLE_ENTRY,
+            "id": "te-default",
+            "timeInterval": {"start": "2024-03-03T09:00:00Z", "end": "2024-03-03T10:00:00Z"},
+        },
+    ]
+    await repo.upsert_many(entries, WS_ID)
+    counts = await repo.get_approval_status_counts(WS_ID)
+    assert counts["PENDING"] == 1
+    assert counts["APPROVED"] == 1
+    assert counts["NOT_SUBMITTED"] == 1
+
+
+async def test_time_entry_apply_approval_details_sets_approver_metadata(
+    db_with_user_project: Database,
+):
+    repo = TimeEntryRepository(db_with_user_project)
+    await repo.upsert_many([SAMPLE_ENTRY], WS_ID)
+    await repo.apply_approval_details(
+        WS_ID,
+        {
+            "te-1": {
+                "status": "APPROVED",
+                "approver_id": "u-approver-1",
+                "approver_name": "Approver One",
+                "approved_at": "2026-04-22T15:47:04Z",
+            }
+        },
+    )
+    row = await repo.get_by_id(WS_ID, "te-1")
+    assert row is not None
+    assert row["approval_status"] == "APPROVED"
+    assert row["approver_id"] == "u-approver-1"
+    assert row["approver_name"] == "Approver One"
+    assert row["approved_at"] == "2026-04-22T15:47:04Z"
+
+
 # ── parse_duration ────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("iso,expected", [

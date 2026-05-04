@@ -80,13 +80,17 @@ FR-11  The sync MUST store a row in sync_log for each entity after every run,
 FR-12  If an entity sync fails (API error, FK violation, etc.) the error MUST
        be captured in sync_log and displayed in the TUI; other entities MUST
        continue unless they depend on the failed one.
+FR-12a After the main time-entry pull completes, the sync MUST query Clockify
+       approval requests and enrich local time_entries.approval_status as:
+       NOT_SUBMITTED, PENDING, or APPROVED.
 
 3.3  Time Entries
 ─────────────────
 FR-13  Every time entry stored MUST include: id, workspace_id, user_id,
        project_id (nullable), description, start_time, end_time (nullable for
        running timers), duration_seconds (nullable), billable flag, is_locked
-       flag, task_id (nullable), tag_ids (JSON array stored as TEXT).
+       flag, task_id (nullable), tag_ids (JSON array stored as TEXT), and
+       approval_status (NOT_SUBMITTED | PENDING | APPROVED).
 FR-14  The tool MUST handle the Clockify API returning tagIds: null by
        coercing null to an empty list before validation.
 FR-15  Indexes MUST exist on time_entries(user_id), (project_id),
@@ -192,14 +196,15 @@ clients             id            workspace_id → workspaces     Includes archi
 projects            id            workspace_id, client_id       Includes archived rows
 users               id            workspace_id                  Workspace members
 time_entries        id            workspace_id, user_id,        tag_ids stored as JSON
-                                  project_id (nullable)         text; duration in secs
+                                  project_id (nullable)         text; duration in secs;
+                                                                approval status stored
 sync_log            id (auto)     —                             UNIQUE(workspace_id,
                                                                 entity_type) for upsert
 
-Schema version: 1  (increment on any breaking DDL change)
+Schema version: 3  (increment on any breaking DDL change)
 
-Note: No schema changes are required for v2.0.  The Fibery push reads from the
-existing time_entries, users, and projects tables without modification.
+Note: v3.0 adds time_entries.approval_status so synced entries can be enriched
+from Clockify approvals and pushed into Fibery.
 
 
 ════════════════════════════════════════════════════════════════════════════════
@@ -248,6 +253,7 @@ Endpoint                                                Method  Auth
 /workspaces/{id}/projects                               GET     X-Api-Key
 /workspaces/{id}/users                                  GET     X-Api-Key
 /workspaces/{id}/user/{uid}/time-entries                GET     X-Api-Key
+/workspaces/{id}/approval-requests                      GET     X-Api-Key
 
 Pagination params : page (1-based), page-size (default 50, max 5000)
 Total count header: X-Total-Count  (used to compute total_pages)
@@ -434,8 +440,8 @@ AC-15  Running the push a second time with no changed entries completes without
 ──────────────
 v2.0 adds a "Push to Fibery" capability that reads time entry data from the
 local SQLite database and upserts it into the Agreement Management/Labor Costs
-database in the Fibery workspace at harpin-ai.fibery.io.  No schema changes to
-the local DB are required; the push is a read-only operation against SQLite.
+database in the Fibery workspace at harpin-ai.fibery.io.  v3.0 extends this to
+also push approval status enriched from the Clockify Approval API.
 
 13.2  Fibery Field Mapping
 ──────────────────────────
@@ -451,6 +457,7 @@ Agreement Management/Task                 time_entries.description       Text; o
 Agreement Management/Task ID              time_entries.task_id           Text; omitted if NULL
 Agreement Management/Project ID           time_entries.project_id        Text; omitted if NULL
 Agreement Management/Billable             1 → "Yes", 0 → "No"           Always present
+Agreement Management/Time Entry Status    time_entries.approval_status   NOT_SUBMITTED | PENDING | APPROVED
 Agreement Management/User ID              users.email                    Existing data uses email
 Agreement Management/Time Entry User Name users.name                     JOIN from users table
 Agreement Management/Time Entry Project   projects.name                  JOIN from projects table

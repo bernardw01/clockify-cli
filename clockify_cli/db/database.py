@@ -40,6 +40,8 @@ class Database:
         """Run all DDL statements idempotently, then record schema version."""
         for ddl in ALL_DDL:
             await self._c.execute(ddl)
+        await self._ensure_time_entries_approval_status_column()
+        await self._ensure_time_entries_approver_columns()
         # Record schema version if not present
         await self._c.execute(
             "INSERT OR IGNORE INTO schema_version(version) VALUES (?)",
@@ -47,6 +49,32 @@ class Database:
         )
         await self._c.commit()
         logger.debug(f"Schema version {CURRENT_SCHEMA_VERSION} applied")
+
+    async def _ensure_time_entries_approval_status_column(self) -> None:
+        """Backfill schema for older DBs that predate approval_status."""
+        try:
+            await self._c.execute(
+                "ALTER TABLE time_entries "
+                "ADD COLUMN approval_status TEXT NOT NULL DEFAULT 'NOT_SUBMITTED'"
+            )
+            logger.info("Applied migration: time_entries.approval_status")
+        except aiosqlite.OperationalError as exc:
+            if "duplicate column name" not in str(exc).lower():
+                raise
+
+    async def _ensure_time_entries_approver_columns(self) -> None:
+        """Backfill schema for approver metadata columns."""
+        for col_name, ddl in (
+            ("approver_id", "ALTER TABLE time_entries ADD COLUMN approver_id TEXT"),
+            ("approver_name", "ALTER TABLE time_entries ADD COLUMN approver_name TEXT"),
+            ("approved_at", "ALTER TABLE time_entries ADD COLUMN approved_at TEXT"),
+        ):
+            try:
+                await self._c.execute(ddl)
+                logger.info(f"Applied migration: time_entries.{col_name}")
+            except aiosqlite.OperationalError as exc:
+                if "duplicate column name" not in str(exc).lower():
+                    raise
 
     async def execute(self, sql: str, params: tuple = ()) -> aiosqlite.Cursor:
         cursor = await self._c.execute(sql, params)

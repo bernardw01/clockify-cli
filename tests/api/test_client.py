@@ -169,6 +169,62 @@ async def test_iter_time_entries_empty():
     assert pages == []
 
 
+async def test_get_approval_entry_ids_by_status():
+    payload = [
+        {
+            "approvalRequest": {"status": {"state": "PENDING"}},
+            "entries": [{"id": "te-1"}, {"id": "te-2"}],
+        },
+        {
+            "approvalRequest": {"status": {"state": "APPROVED"}},
+            "entries": [{"id": "te-3"}],
+        },
+    ]
+    client = mock_client([make_response(payload)])
+    pending_ids = await client.get_approval_entry_ids("ws-1", "PENDING")
+    assert pending_ids == {"te-1", "te-2"}
+
+
+async def test_get_approval_entry_details_includes_approver_fields():
+    payload = [
+        {
+            "approvalRequest": {
+                "status": {
+                    "state": "APPROVED",
+                    "updatedBy": "u-approver-1",
+                    "updatedByUserName": "Approver One",
+                    "updatedAt": "2026-04-22T15:47:04Z",
+                }
+            },
+            "entries": [{"id": "te-3"}],
+        },
+        {
+            "approvalRequest": {
+                "status": {
+                    "state": "PENDING",
+                    "updatedBy": "u-submitter-1",
+                    "updatedByUserName": "Submitter One",
+                    "updatedAt": "2026-04-22T08:43:26Z",
+                }
+            },
+            "entries": [{"id": "te-4"}],
+        },
+    ]
+    client = mock_client([make_response(payload), make_response(payload)])
+
+    approved = await client.get_approval_entry_details("ws-1", "APPROVED")
+    assert approved["te-3"]["status"] == "APPROVED"
+    assert approved["te-3"]["approver_id"] == "u-approver-1"
+    assert approved["te-3"]["approver_name"] == "Approver One"
+    assert approved["te-3"]["approved_at"] == "2026-04-22T15:47:04Z"
+
+    pending = await client.get_approval_entry_details("ws-1", "PENDING")
+    assert pending["te-4"]["status"] == "PENDING"
+    assert pending["te-4"]["approver_id"] is None
+    assert pending["te-4"]["approver_name"] is None
+    assert pending["te-4"]["approved_at"] is None
+
+
 # ── error mapping ──────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("status,exc", [

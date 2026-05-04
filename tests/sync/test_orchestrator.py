@@ -43,6 +43,12 @@ def make_mock_client(
     mock.get_clients = AsyncMock(return_value=clients or [])
     mock.get_projects = AsyncMock(return_value=projects or [])
     mock.get_users = AsyncMock(return_value=users or [])
+    async def _get_approval_entry_details(
+        _workspace_id: str,
+        _status: str,
+    ) -> dict[str, dict[str, str | None]]:
+        return {}
+    mock.get_approval_entry_details = AsyncMock(side_effect=_get_approval_entry_details)
 
     async def _iter_time_entries(*args, **kwargs):
         for i, page in enumerate(time_entry_pages or []):
@@ -139,6 +145,166 @@ async def test_sync_time_entries_persisted(db: Database):
         "SELECT COUNT(*) AS n FROM time_entries WHERE workspace_id = ?", (WS_ID,)
     )
     assert count["n"] == 1
+
+
+async def test_reset_local_full_sync_clears_workspace_rows_before_sync(db: Database):
+    """Reset-local mode should purge local entity tables before full re-sync."""
+    await db.execute(
+        "INSERT OR REPLACE INTO clients(id, workspace_id, name, archived) VALUES (?, ?, ?, ?)",
+        ("c-stale", WS_ID, "Stale Client", 0),
+    )
+    await db.execute(
+        "INSERT OR REPLACE INTO projects(id, workspace_id, client_id, name, archived, billable, public) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        ("p-stale", WS_ID, None, "Stale Project", 0, 0, 0),
+    )
+    await db.execute(
+        "INSERT OR REPLACE INTO users(id, workspace_id, name) VALUES (?, ?, ?)",
+        ("u-stale", WS_ID, "Stale User"),
+    )
+    await db.execute(
+        "INSERT OR REPLACE INTO time_entries("
+        "id, workspace_id, user_id, project_id, description, start_time, end_time, duration, billable, is_locked"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "te-stale",
+            WS_ID,
+            "u-stale",
+            "p-stale",
+            "Stale entry",
+            "2024-01-01T00:00:00Z",
+            "2024-01-01T01:00:00Z",
+            3600,
+            0,
+            0,
+        ),
+    )
+    await db.execute(
+        "INSERT INTO sync_log(workspace_id, entity_type, status) VALUES (?, ?, ?)",
+        (WS_ID, "clients", "completed"),
+    )
+
+    client = make_mock_client()
+    orch = SyncOrchestrator(client, db)
+    progress = await orch.sync_all(WS_ID, incremental=True, reset_local=True)
+
+    assert progress.is_done
+    assert progress.incremental is False
+
+    clients = await db.fetchone("SELECT COUNT(*) AS n FROM clients WHERE workspace_id = ?", (WS_ID,))
+    projects = await db.fetchone("SELECT COUNT(*) AS n FROM projects WHERE workspace_id = ?", (WS_ID,))
+    users = await db.fetchone("SELECT COUNT(*) AS n FROM users WHERE workspace_id = ?", (WS_ID,))
+    entries = await db.fetchone("SELECT COUNT(*) AS n FROM time_entries WHERE workspace_id = ?", (WS_ID,))
+    sync_log = await db.fetchone("SELECT COUNT(*) AS n FROM sync_log WHERE workspace_id = ?", (WS_ID,))
+
+    assert clients["n"] == 0
+    assert projects["n"] == 0
+    assert users["n"] == 0
+    assert entries["n"] == 0
+    assert sync_log["n"] > 0  # recreated by this new sync run
+
+
+async def test_sync_enriches_approval_statuses(db: Database):
+    """Approval API statuses should overwrite local approval_status values."""
+    await db.execute(
+        "INSERT OR REPLACE INTO users(id, workspace_id, name) VALUES (?, ?, ?)",
+        ("u-1", WS_ID, "Alice"),
+    )
+    await db.execute(
+        "INSERT OR REPLACE INTO time_entries("
+        "id, workspace_id, user_id, description, start_time, end_time, duration, billable, is_locked"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "te-not-submitted",
+            WS_ID,
+            "u-1",
+            "Not submitted",
+            "2024-01-01T00:00:00Z",
+            "2024-01-01T01:00:00Z",
+            3600,
+            0,
+            0,
+        ),
+    )
+    await db.execute(
+        "INSERT OR REPLACE INTO time_entries("
+        "id, workspace_id, user_id, description, start_time, end_time, duration, billable, is_locked"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "te-pending",
+            WS_ID,
+            "u-1",
+            "Pending",
+            "2024-01-02T00:00:00Z",
+            "2024-01-02T01:00:00Z",
+            3600,
+            0,
+            0,
+        ),
+    )
+    await db.execute(
+        "INSERT OR REPLACE INTO time_entries("
+        "id, workspace_id, user_id, description, start_time, end_time, duration, billable, is_locked"
+        ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "te-approved",
+            WS_ID,
+            "u-1",
+            "Approved",
+            "2024-01-03T00:00:00Z",
+            "2024-01-03T01:00:00Z",
+            3600,
+            0,
+            0,
+        ),
+    )
+
+    client = make_mock_client()
+    async def _get_approval_entry_details(
+        _workspace_id: str,
+        status: str,
+    ) -> dict[str, dict[str, str | None]]:
+        if status == "PENDING":
+            return {
+                "te-pending": {
+                    "status": "PENDING",
+                    "approver_id": None,
+                    "approver_name": None,
+                    "approved_at": None,
+                }
+            }
+        if status == "APPROVED":
+            return {
+                "te-approved": {
+                    "status": "APPROVED",
+                    "approver_id": "u-approver-1",
+                    "approver_name": "Approver One",
+                    "approved_at": "2026-04-22T15:47:04Z",
+                }
+            }
+        return {}
+    client.get_approval_entry_details = AsyncMock(side_effect=_get_approval_entry_details)
+    orch = SyncOrchestrator(client, db)
+    progress = await orch.sync_all(WS_ID, incremental=False)
+
+    assert progress.is_done
+    rows = await db.fetchall(
+        "SELECT id, approval_status, approver_id, approver_name, approved_at "
+        "FROM time_entries WHERE workspace_id = ? ORDER BY id",
+        (WS_ID,),
+    )
+    statuses = {row["id"]: row["approval_status"] for row in rows}
+    assert statuses["te-approved"] == "APPROVED"
+    assert statuses["te-pending"] == "PENDING"
+    assert statuses["te-not-submitted"] == "NOT_SUBMITTED"
+    approved_row = next(r for r in rows if r["id"] == "te-approved")
+    pending_row = next(r for r in rows if r["id"] == "te-pending")
+    assert approved_row["approver_id"] == "u-approver-1"
+    assert approved_row["approver_name"] == "Approver One"
+    assert approved_row["approved_at"] == "2026-04-22T15:47:04Z"
+    assert pending_row["approver_id"] is None
+    assert pending_row["approver_name"] is None
+    assert pending_row["approved_at"] is None
 
 
 async def test_progress_callback_invoked(db: Database):

@@ -2,6 +2,7 @@
 import asyncio
 import time
 import uuid
+from collections.abc import Awaitable, Callable
 from typing import Any, Optional
 
 import httpx
@@ -10,12 +11,16 @@ from loguru import logger
 from clockify_cli.api.exceptions import AuthError, ClockifyAPIError, RateLimitError
 from clockify_cli.constants import (
     FIBERY_BATCH_SIZE,
+    FIBERY_CLOCKIFY_UPDATE_LOG_TYPE,
     FIBERY_COMMANDS_PATH,
     FIBERY_LABOR_COSTS_TYPE,
     FIBERY_MAX_CONCURRENT,
+    FIBERY_TIME_ENTRY_STATUS_ENUM_TYPE,
 )
+from clockify_cli.fibery.models import ClockifyUpdateLogResult
 
 _MAX_BODY_LOG = 300
+_TIME_ENTRY_STATUS_FIELD = "Agreement Management/Time Entry Status"
 
 
 def _mask_key(key: str) -> str:
@@ -40,6 +45,7 @@ class FiberyClient:
         self._http: Optional[httpx.AsyncClient] = None
         # Fibery allows 3 requests/sec; Semaphore caps concurrency conservatively
         self._sem = asyncio.Semaphore(FIBERY_MAX_CONCURRENT)
+        self._time_entry_status_id_by_name: dict[str, str] | None = None
 
     async def __aenter__(self) -> "FiberyClient":
         logger.info(
@@ -158,6 +164,170 @@ class FiberyClient:
         logger.info(f"Pre-flight: {len(existing)} existing Labor Cost entries in Fibery")
         return existing
 
+    async def get_last_clockify_update_run_at(self) -> Optional[str]:
+        """Return the latest run timestamp from Fibery Clockify Update Log."""
+        results = await self._post([{
+            "command": "fibery.entity/query",
+            "args": {
+                "query": {
+                    "q/from": FIBERY_CLOCKIFY_UPDATE_LOG_TYPE,
+                    "q/select": {
+                        "modified_at": "fibery/modification-date",
+                    },
+                    "q/limit": "q/no-limit",
+                }
+            },
+        }])
+        rows: list[dict[str, Any]] = results[0].get("result", []) if results else []
+        modified_values = [row.get("modified_at") for row in rows if row.get("modified_at")]
+        last_run = max(modified_values) if modified_values else None
+        logger.info(
+            "Clockify Update Log checkpoint: "
+            f"{last_run if last_run else 'none (will run full push)'}"
+        )
+        return last_run
+
+    async def append_clockify_update_log(self, result: ClockifyUpdateLogResult) -> None:
+        """Append one summary row into Fibery Clockify Update Log."""
+        response = await self._post([{
+            "command": "fibery.entity/create",
+            "args": {
+                "type": FIBERY_CLOCKIFY_UPDATE_LOG_TYPE,
+                "entity": {
+                    "Agreement Management/Name": "Run completed",
+                    "Agreement Management/Last Update": result.completed_at,
+                    "Agreement Management/Records Updated": result.updated,
+                    "Agreement Management/Records Inserted": result.created,
+                    "Agreement Management/Records Skipped": result.skipped,
+                },
+            },
+        }])
+        if response and not response[0].get("success", False):
+            result_body = response[0].get("result") or {}
+            err_detail = (
+                result_body.get("message")
+                or result_body.get("name")
+                or response[0].get("error")
+                or "unknown"
+            )
+            raise ClockifyAPIError(f"Failed to write Clockify Update Log: {err_detail}")
+
+    async def _get_time_entry_status_id_by_name(self) -> dict[str, str]:
+        """Load enum IDs for Time Entry Status names."""
+        if self._time_entry_status_id_by_name is not None:
+            return self._time_entry_status_id_by_name
+
+        results = await self._post([{
+            "command": "fibery.entity/query",
+            "args": {
+                "query": {
+                    "q/from": FIBERY_TIME_ENTRY_STATUS_ENUM_TYPE,
+                    "q/select": {
+                        "id": "fibery/id",
+                        "name": "enum/name",
+                    },
+                    "q/limit": "q/no-limit",
+                }
+            },
+        }])
+        rows: list[dict[str, Any]] = results[0].get("result", []) if results else []
+        self._time_entry_status_id_by_name = {
+            str(row["name"]): str(row["id"])
+            for row in rows
+            if row.get("id") and row.get("name")
+        }
+        return self._time_entry_status_id_by_name
+
+    async def _normalize_time_entry_status_field(
+        self,
+        entities: list[dict[str, Any]],
+    ) -> None:
+        """Convert text status values to enum entity references."""
+        if not any(isinstance(e.get(_TIME_ENTRY_STATUS_FIELD), str) for e in entities):
+            return
+
+        id_by_name = await self._get_time_entry_status_id_by_name()
+        for entity in entities:
+            status_value = entity.get(_TIME_ENTRY_STATUS_FIELD)
+            if not isinstance(status_value, str):
+                continue
+            enum_id = id_by_name.get(status_value)
+            if enum_id:
+                entity[_TIME_ENTRY_STATUS_FIELD] = {"fibery/id": enum_id}
+            else:
+                logger.warning(
+                    f"Unknown time-entry status '{status_value}' for Fibery; "
+                    "dropping field from payload."
+                )
+                entity.pop(_TIME_ENTRY_STATUS_FIELD, None)
+
+    async def get_labor_cost_entity_ids(self) -> list[str]:
+        """Return all Fibery UUIDs currently present in Labor Costs."""
+        results = await self._post([{
+            "command": "fibery.entity/query",
+            "args": {
+                "query": {
+                    "q/from": FIBERY_LABOR_COSTS_TYPE,
+                    "q/select": {
+                        "id": "fibery/id",
+                    },
+                    "q/limit": "q/no-limit",
+                }
+            },
+        }])
+        rows: list[dict[str, Any]] = results[0].get("result", []) if results else []
+        entity_ids = [row["id"] for row in rows if row.get("id")]
+        logger.info(f"Found {len(entity_ids)} Labor Cost entities to delete")
+        return entity_ids
+
+    async def delete_labor_cost_entities(
+        self,
+        entity_ids: list[str],
+        on_progress: Callable[[int, int], Awaitable[None]] | None = None,
+    ) -> int:
+        """Delete Labor Cost entities by Fibery UUID."""
+        if not entity_ids:
+            return 0
+
+        deleted = 0
+        total = len(entity_ids)
+        for batch_start in range(0, len(entity_ids), FIBERY_BATCH_SIZE):
+            batch = entity_ids[batch_start : batch_start + FIBERY_BATCH_SIZE]
+            commands = [
+                {
+                    "command": "fibery.entity/delete",
+                    "args": {
+                        "type": FIBERY_LABOR_COSTS_TYPE,
+                        "entity": {"fibery/id": entity_id},
+                    },
+                }
+                for entity_id in batch
+            ]
+            results = await self._post(commands)
+
+            if not results:
+                # Defensive fallback if API returns no command result objects.
+                deleted += len(batch)
+                continue
+
+            for result in results:
+                if not result.get("success", False):
+                    result_body = result.get("result") or {}
+                    err_detail = (
+                        result_body.get("message")
+                        or result_body.get("name")
+                        or result.get("error")
+                        or "unknown"
+                    )
+                    raise ClockifyAPIError(f"Fibery delete failed: {err_detail}")
+                deleted += 1
+            logger.debug(f"Deleted {deleted}/{total} Labor Cost entities")
+            if on_progress:
+                await on_progress(deleted, total)
+
+        logger.info(f"Deleted {deleted} Labor Cost entities from Fibery")
+        return deleted
+
     async def batch_upsert_labor_costs(self, entities: list[dict[str, Any]]) -> int:
         """Batch create-or-update Labor Cost entities using Time Log ID as conflict key.
 
@@ -170,18 +340,21 @@ class FiberyClient:
         # Assign a new UUID to each entity (Fibery uses it for creation; ignored on update)
         for e in entities:
             e.setdefault("fibery/id", str(uuid.uuid4()))
+        await self._normalize_time_entry_status_field(entities)
 
-        results = await self._post([{
-            "command": "fibery.entity.batch/create-or-update",
-            "args": {
-                "type": FIBERY_LABOR_COSTS_TYPE,
-                "conflict-field": "Agreement Management/Time Log ID",
-                "conflict-action": "update-latest",
-                "entities": entities,
-            },
-        }])
+        async def _send_batch(batch_entities: list[dict[str, Any]]) -> dict[str, Any]:
+            results = await self._post([{
+                "command": "fibery.entity.batch/create-or-update",
+                "args": {
+                    "type": FIBERY_LABOR_COSTS_TYPE,
+                    "conflict-field": "Agreement Management/Time Log ID",
+                    "conflict-action": "update-latest",
+                    "entities": batch_entities,
+                },
+            }])
+            return results[0] if results else {}
 
-        result = results[0] if results else {}
+        result = await _send_batch(entities)
         if not result.get("success", False):
             result_body = result.get("result") or {}
             err_detail = (
@@ -190,7 +363,30 @@ class FiberyClient:
                 or result.get("error")
                 or "unknown"
             )
-            raise ClockifyAPIError(f"Fibery batch upsert failed: {err_detail}")
+            time_entry_status_field_problem = (
+                _TIME_ENTRY_STATUS_FIELD in str(err_detail)
+                and (
+                    "schema-field-not-found" in str(result_body.get("name", ""))
+                    or "parse-entity-field-failed" in str(result_body.get("name", ""))
+                )
+            )
+            if time_entry_status_field_problem:
+                logger.warning(
+                    f"Fibery rejected field '{_TIME_ENTRY_STATUS_FIELD}'. "
+                    "Retrying batch without it."
+                )
+                for entity in entities:
+                    entity.pop(_TIME_ENTRY_STATUS_FIELD, None)
+                result = await _send_batch(entities)
+            if not result.get("success", False):
+                result_body = result.get("result") or {}
+                err_detail = (
+                    result_body.get("message")
+                    or result_body.get("name")
+                    or result.get("error")
+                    or "unknown"
+                )
+                raise ClockifyAPIError(f"Fibery batch upsert failed: {err_detail}")
 
         # The result count may vary by Fibery version; fall back to input count
         count: int = len(result.get("result", entities))

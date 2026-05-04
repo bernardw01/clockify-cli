@@ -14,7 +14,14 @@ from clockify_cli.api.exceptions import (
     RateLimitError,
     ServerError,
 )
-from clockify_cli.api.models import Client, Project, TimeEntry, Workspace, WorkspaceUser
+from clockify_cli.api.models import (
+    ApprovalRequestItem,
+    Client,
+    Project,
+    TimeEntry,
+    Workspace,
+    WorkspaceUser,
+)
 from clockify_cli.constants import BASE_URL, DEFAULT_PAGE_SIZE, MAX_REQUESTS_PER_SECOND
 
 # Max characters of response body to log at DEBUG level
@@ -288,3 +295,52 @@ class ClockifyClient:
                 logger.debug(f"Partial page ({len(data)} < {page_size}) — last page reached")
                 break
             page += 1
+
+    async def get_approval_entry_ids(self, workspace_id: str, status: str) -> set[str]:
+        """Return time-entry IDs included in approval requests for one status."""
+        logger.info(f"Fetching approval requests for workspace {workspace_id} status={status}")
+        data = await self._get_paginated(
+            f"/workspaces/{workspace_id}/approval-requests",
+            {"status": status},
+        )
+        entry_ids: set[str] = set()
+        for item in data:
+            request = ApprovalRequestItem.model_validate(item)
+            if request.approval_request.status.state.upper() != status.upper():
+                continue
+            for entry in request.entries:
+                entry_ids.add(entry.id)
+        logger.info(
+            f"Fetched {len(entry_ids)} approved-entry id(s) for status={status}"
+        )
+        return entry_ids
+
+    async def get_approval_entry_details(
+        self,
+        workspace_id: str,
+        status: str,
+    ) -> dict[str, dict[str, Optional[str]]]:
+        """Return per-entry approval details for one approval status."""
+        logger.info(f"Fetching approval entry details for workspace {workspace_id} status={status}")
+        data = await self._get_paginated(
+            f"/workspaces/{workspace_id}/approval-requests",
+            {"status": status},
+        )
+        details: dict[str, dict[str, Optional[str]]] = {}
+        for item in data:
+            request = ApprovalRequestItem.model_validate(item)
+            req_status = request.approval_request.status
+            if req_status.state.upper() != status.upper():
+                continue
+            for entry in request.entries:
+                is_approved = req_status.state.upper() == "APPROVED"
+                details[entry.id] = {
+                    "status": req_status.state.upper(),
+                    "approver_id": req_status.updated_by if is_approved else None,
+                    "approver_name": req_status.updated_by_user_name if is_approved else None,
+                    "approved_at": req_status.updated_at if is_approved else None,
+                }
+        logger.info(
+            f"Fetched approval details for {len(details)} entry id(s) status={status}"
+        )
+        return details
